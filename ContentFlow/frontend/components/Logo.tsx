@@ -13,3 +13,4 @@ export default function Logo({ href = "/" }: { href?: string }) {
     </Link>
   );
 }
+
