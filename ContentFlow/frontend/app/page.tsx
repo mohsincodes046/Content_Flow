@@ -1,69 +1,55 @@
-import Image from "next/image";
+import Link from "next/link";
+import Logo from "../components/Logo";
+
+const benefits = [
+  { icon: "✳", title: "Plan a month in minutes", copy: "Drop in a batch of content and let a flexible schedule do the heavy lifting." },
+  { icon: "✦", title: "A little help from AI", copy: "Find the right words and hashtags, then make every caption your own." },
+  { icon: "↗", title: "Everything, in one place", copy: "Keep your channels, campaigns, and publishing calendar working together." },
+];
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="marketing-page">
+      <nav className="marketing-nav">
+        <Logo />
+        <div className="marketing-nav-links">
+          <a href="#features">Features</a>
+          <Link className="signin-link" href="/login">Sign in</Link>
+          <Link className="button button-primary nav-cta" href="/signup">Get started <span>↗</span></Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </nav>
+
+      <section className="marketing-hero">
+        <div className="hero-copy">
+          <div className="eyebrow"><span className="live-dot" /> YOUR SOCIALS, IN SYNC</div>
+          <h1>Make room for<br />the <span>big ideas.</span></h1>
+          <p className="hero-description">One calm little corner for all your social channels. Plan it once, show up everywhere.</p>
+          <div className="hero-actions">
+            <Link className="button button-primary hero-cta" href="/signup">Get started for free <span>↗</span></Link>
+            <Link className="hero-secondary" href="/dashboard"><span className="play-icon">▶</span> Take a look around</Link>
+          </div>
+          <div className="social-proof"><div className="avatar-stack"><span>J</span><span>M</span><span>A</span><span>+</span></div><span>Made for the people behind the posts</span></div>
         </div>
-      </main>
-    </div>
+
+        <div className="hero-art" aria-label="Illustration of the Content-Flow content calendar">
+          <div className="art-orb orb-one" /><div className="art-orb orb-two" />
+          <div className="floating-note"><span className="note-sparkle">✳</span><span><strong>All caught up!</strong><small>Your next post is on its way</small></span><span className="checkmark">✓</span></div>
+          <div className="hero-calendar">
+            <div className="mock-top"><div className="mock-brand"><span className="mini-mark">✳</span> your week, at a glance</div><div className="mock-dots"><i /><i /><i /></div></div>
+            <div className="mock-calendar-head"><span>Content calendar</span><span className="mock-month">October 2026　⌄</span></div>
+            <div className="mock-days">{["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((d, i) => <div className="mock-day" key={d}><small>{d}</small><b className={i === 2 ? "today-circle" : ""}>{[12, 13, 14, 15, 16, 17, 18][i]}</b>{i === 0 || i === 2 || i === 4 || i === 6 ? <span className={`mock-post post-${i}`} /> : null}</div>)}</div>
+            <div className="mock-posts"><div className="mock-post-card"><span className="mock-image mock-image-one">✿</span><span><small>INSTAGRAM · 9:30 AM</small><b>Little things, big joy ✨</b></span><span className="mock-status">●</span></div><div className="mock-post-card"><span className="mock-image mock-image-two">◉</span><span><small>TIKTOK · 2:00 PM</small><b>A peek behind the scenes...</b></span><span className="mock-status mint">●</span></div></div>
+            <div className="mock-bottom"><span>✳  12 posts planned this week</span><span className="mock-progress"><i /></span><b>+4</b></div>
+          </div>
+          <div className="floating-ai"><span>✦</span><div><small>A LITTLE AI MAGIC</small><b>Caption, coming right up.</b></div><span className="ai-arrow">↗</span></div>
+        </div>
+      </section>
+
+      <section className="feature-section" id="features">
+        <div className="feature-heading"><span className="eyebrow">LESS BUSYWORK, MORE YOU</span><h2>Your whole social world.<br /><span>One easy rhythm.</span></h2></div>
+        <div className="feature-cards">{benefits.map((item, i) => <article className="feature-card" key={item.title}><div className={`feature-icon icon-${i}`}>{item.icon}</div><h3>{item.title}</h3><p>{item.copy}</p><Link href="/dashboard">Explore the dashboard <span>↗</span></Link></article>)}</div>
+      </section>
+      <footer className="marketing-footer"><Logo /><span>Made for what you make. © 2026 Content-Flow</span></footer>
+    </main>
   );
 }
