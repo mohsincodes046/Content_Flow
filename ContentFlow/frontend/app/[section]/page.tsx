@@ -11,6 +11,7 @@ const dashboardSections = [
   "calendar",
   "bulk-schedule",
   "create-post",
+  "review-queue",
   "ai-captions",
   "analytics",
   "accounts",
@@ -28,12 +29,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const authTitles: Record<(typeof authModes)[number], string> = { login: "Sign in", signup: "Get started", "forgot-password": "Forgot password", "reset-password": "Reset password" };
     return { title: authTitles[section as (typeof authModes)[number]] };
   }
-  const title = section.split("-").map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ");
+  const title = section === "create-post"
+    ? "Submit Content"
+    : section.split("-").map((word) => word[0]?.toUpperCase() + word.slice(1)).join(" ");
   return { title: title || "Dashboard" };
 }
 
-export default async function SectionPage({ params }: Props) {
+export default function SectionPage({ params }: Props) {
+  return <Suspense fallback={null}><SectionPageContent params={params} /></Suspense>;
+}
+
+async function SectionPageContent({ params }: Props) {
   const { section } = await params;
   if (authModes.includes(section as (typeof authModes)[number])) return <AuthPage mode={section as (typeof authModes)[number]} />;
-  return <Suspense fallback={null}><DashboardApp section={section} /></Suspense>;
+  return <DashboardApp section={section} />;
 }

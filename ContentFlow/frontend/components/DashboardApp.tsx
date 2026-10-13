@@ -2,12 +2,17 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useCallback, useMemo, useState, useSyncExternalStore, type ChangeEvent, type DragEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import Logo from "./Logo";
+import SubmissionWorkflow from "./SubmissionWorkflow";
 
 type MediaItem = { id: string; name: string; url: string; kind: "image" | "video" };
 type ScheduledPost = { id: string; mediaName: string; date: string; time: string; platform: string[]; caption: string };
 type SocialAccount = { id: string; label: string; handle: string; color: string; icon: string };
+type DashboardUser = { id: string; email: string; full_name: string; workspace_name: string };
+
+const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 const accounts: SocialAccount[] = [
   { id: "instagram", label: "Instagram", handle: "@goodthings.studio", color: "#e76072", icon: "◎" },
@@ -22,7 +27,8 @@ const navigation = [
   { label: "Content library", href: "/content", icon: "image" },
   { label: "Calendar", href: "/calendar", icon: "calendar" },
   { label: "Bulk schedule", href: "/bulk-schedule", icon: "stack", badge: "CORE" },
-  { label: "Create a post", href: "/create-post", icon: "plus" },
+  { label: "Submit content", href: "/create-post", icon: "plus" },
+  { label: "Review queue", href: "/review-queue", icon: "spark" },
   { label: "AI captions", href: "/ai-captions", icon: "spark" },
   { label: "Analytics", href: "/analytics", icon: "chart", section: "MANAGE" },
   { label: "Social accounts", href: "/accounts", icon: "share" },
@@ -45,25 +51,79 @@ const localDate = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 const todayString = () => localDate(new Date());
-const subscribeToSavedPosts = (onChange: () => void) => {
-  window.addEventListener("socialpilot-posts-updated", onChange);
-  window.addEventListener("storage", onChange);
-  return () => {
-    window.removeEventListener("socialpilot-posts-updated", onChange);
-    window.removeEventListener("storage", onChange);
-  };
+const supportedPlatforms = new Set(["instagram", "facebook", "linkedin", "youtube", "tiktok"]);
+const sortScheduledPosts = (posts: ScheduledPost[]) => [...posts].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+const parseScheduledPosts = (value: unknown): ScheduledPost[] => {
+  if (!Array.isArray(value)) throw new Error("The server returned an invalid schedule.");
+  return value.map((item): ScheduledPost => {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      !("id" in item) ||
+      typeof item.id !== "string" ||
+      !("media_name" in item) ||
+      typeof item.media_name !== "string" ||
+      !("date" in item) ||
+      typeof item.date !== "string" ||
+      !("time" in item) ||
+      typeof item.time !== "string" ||
+      !("caption" in item) ||
+      typeof item.caption !== "string" ||
+      !("platforms" in item) ||
+      !Array.isArray(item.platforms) ||
+      !item.platforms.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform))
+    ) {
+      throw new Error("The server returned an invalid scheduled post.");
+    }
+    return {
+      id: item.id,
+      mediaName: item.media_name,
+      date: item.date,
+      time: item.time,
+      platform: item.platforms,
+      caption: item.caption,
+    };
+  });
 };
-const getSavedPostsSnapshot = () => window.localStorage.getItem("socialpilot-posts") ?? "[]";
-const getEmptyPostsSnapshot = () => "[]";
-const parseSavedPosts = (saved: string): ScheduledPost[] => {
-  try {
-    const posts: unknown = JSON.parse(saved);
-    if (!Array.isArray(posts)) throw new Error("Saved schedules must be a list of posts.");
-    return posts as ScheduledPost[];
-  } catch (error) {
-    console.error("Unable to parse saved schedules.", error);
-    return [];
+const parseLegacyScheduledPosts = (saved: string): ScheduledPost[] => {
+  const value: unknown = JSON.parse(saved);
+  if (!Array.isArray(value)) throw new Error("Older saved schedules have an invalid format.");
+  return value.map((item): ScheduledPost => {
+    if (
+      typeof item !== "object" ||
+      item === null ||
+      !("id" in item) ||
+      typeof item.id !== "string" ||
+      !("mediaName" in item) ||
+      typeof item.mediaName !== "string" ||
+      !("date" in item) ||
+      typeof item.date !== "string" ||
+      !("time" in item) ||
+      typeof item.time !== "string" ||
+      !("caption" in item) ||
+      typeof item.caption !== "string" ||
+      !("platform" in item) ||
+      !Array.isArray(item.platform) ||
+      !item.platform.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform))
+    ) {
+      throw new Error("An older saved schedule has an invalid format.");
+    }
+    return {
+      id: item.id,
+      mediaName: item.mediaName,
+      date: item.date,
+      time: item.time,
+      platform: item.platform,
+      caption: item.caption,
+    };
+  });
+};
+const apiErrorMessage = async (response: Response, fallback: string) => {
+  const payload: unknown = await response.json().catch(() => null);
+  if (typeof payload === "object" && payload !== null && "detail" in payload && typeof payload.detail === "string") {
+    return payload.detail;
   }
+  return `${fallback} (${response.status}).`;
 };
 const friendlyDate = (date: string) => new Date(`${date}T12:00:00`).toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
 
@@ -95,6 +155,16 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 }
 
 export default function DashboardApp({ section }: { section: string }) {
+  const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<DashboardUser | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [authError, setAuthError] = useState("");
+  const [posts, setPosts] = useState<ScheduledPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [postsLoadError, setPostsLoadError] = useState("");
+  const [postsReloadKey, setPostsReloadKey] = useState(0);
+  const [scheduleMutationPending, setScheduleMutationPending] = useState(false);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({});
@@ -108,8 +178,120 @@ export default function DashboardApp({ section }: { section: string }) {
   const [draggedPost, setDraggedPost] = useState<number | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const savedPostsSnapshot = useSyncExternalStore(subscribeToSavedPosts, getSavedPostsSnapshot, getEmptyPostsSnapshot);
-  const posts = useMemo(() => parseSavedPosts(savedPostsSnapshot), [savedPostsSnapshot]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${apiUrl}/api/auth/me`, { credentials: "include", signal: controller.signal })
+      .then(async (response) => {
+        if (response.status === 401) {
+          router.replace("/login");
+          return;
+        }
+        if (!response.ok) throw new Error(`Account check failed (${response.status}).`);
+        const user: unknown = await response.json();
+        if (typeof user !== "object" || user === null || !("id" in user) || !("full_name" in user) || !("workspace_name" in user) || !("email" in user)) {
+          throw new Error("The server returned an unexpected account response.");
+        }
+        setCurrentUser({
+          id: String(user.id),
+          email: String(user.email),
+          full_name: String(user.full_name),
+          workspace_name: String(user.workspace_name),
+        });
+        setSessionReady(true);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        console.error("Unable to verify the Content-Flow account session.", error);
+        setAuthError(error instanceof Error ? error.message : "Account verification failed.");
+        setSessionReady(true);
+      });
+    return () => controller.abort();
+  }, [router]);
+
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId) return;
+
+    const controller = new AbortController();
+    async function loadScheduledPosts() {
+      setPostsLoading(true);
+      setPostsLoadError("");
+      try {
+        const response = await fetch(`${apiUrl}/api/scheduled-posts`, {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (response.status === 401) {
+          router.replace("/login");
+          throw new Error("Your session has expired. Please sign in again.");
+        }
+        if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to load your saved schedule"));
+        let loadedPosts = parseScheduledPosts(await response.json());
+        setPosts(loadedPosts);
+
+        const legacyKey = `content-flow-posts-${userId}`;
+        const legacySnapshot = window.localStorage.getItem(legacyKey);
+        if (legacySnapshot) {
+          const legacyPosts = parseLegacyScheduledPosts(legacySnapshot);
+          for (let offset = 0; offset < legacyPosts.length; offset += 366) {
+            const batch = legacyPosts.slice(offset, offset + 366);
+            const migrationResponse = await fetch(`${apiUrl}/api/scheduled-posts`, {
+              method: "POST",
+              credentials: "include",
+              signal: controller.signal,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                posts: batch.map(({ mediaName, date, time, platform, caption }) => ({
+                  media_name: mediaName,
+                  date,
+                  time,
+                  platforms: platform,
+                  caption,
+                })),
+              }),
+            });
+            if (!migrationResponse.ok) {
+              throw new Error(await apiErrorMessage(migrationResponse, "Unable to move older schedules to your account"));
+            }
+            const migrated = parseScheduledPosts(await migrationResponse.json());
+            loadedPosts = sortScheduledPosts([
+              ...loadedPosts,
+              ...migrated.filter((post) => !loadedPosts.some((loaded) => loaded.id === post.id)),
+            ]);
+            setPosts(loadedPosts);
+          }
+          window.localStorage.removeItem(legacyKey);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error("Unable to load or migrate scheduled posts.", error);
+        setPostsLoadError(error instanceof Error ? error.message : "Unable to load your saved schedule.");
+      } finally {
+        if (!controller.signal.aborted) setPostsLoading(false);
+      }
+    }
+    void loadScheduledPosts();
+    return () => controller.abort();
+  }, [currentUser?.id, postsReloadKey, router]);
+
+  async function handleLogout() {
+    if (logoutPending) return;
+    setLogoutPending(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(`Sign out failed (${response.status}).`);
+      router.replace("/login");
+    } catch (error) {
+      console.error("Unable to sign out from the Content-Flow API.", error);
+      setNotice(error instanceof Error ? error.message : "Unable to sign out. Please try again.");
+      setLogoutPending(false);
+    }
+  }
+
   const removeMedia = useCallback((id: string) => {
     const item = media.find((entry) => entry.id === id);
     if (item) URL.revokeObjectURL(item.url);
@@ -173,7 +355,11 @@ export default function DashboardApp({ section }: { section: string }) {
   const blocked = useMemo(() => preview.some((candidate) => posts.some((saved) => saved.date === candidate.date && saved.time === candidate.time && saved.platform.some((platform) => candidate.platform.includes(platform)))), [preview, posts]);
   const sectionName = navigation.find((item) => item.href === `/${section}`)?.label ?? "Overview";
   const title = section === "bulk-schedule" ? "Bulk schedule" : sectionName;
-  function saveSchedule() {
+  async function saveSchedule() {
+    if (postsLoading || postsLoadError) {
+      setNotice(postsLoadError || "Your saved schedule is still loading. Try again in a moment.");
+      return;
+    }
     if (preview.length === 0 || selectedAccounts.length === 0) {
       setNotice(selectedAccounts.length === 0 ? "Choose at least one social account before scheduling." : "Add some photos or videos first, then your schedule is ready.");
       return;
@@ -182,46 +368,82 @@ export default function DashboardApp({ section }: { section: string }) {
       setNotice("There's already a post planned for one of these accounts at the same time. Change the publishing time or edit your existing schedule.");
       return;
     }
-    const newPosts: ScheduledPost[] = preview.map((post) => ({ id: post.id, mediaName: post.mediaName, date: post.date, time: post.time, platform: post.platform, caption: post.caption }));
-    const next = [...posts, ...newPosts].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+    if (scheduleMutationPending) return;
+    setScheduleMutationPending(true);
     try {
-      window.localStorage.setItem("socialpilot-posts", JSON.stringify(next));
-      window.dispatchEvent(new Event("socialpilot-posts-updated"));
-      setNotice(`${newPosts.length} ${newPosts.length === 1 ? "post is" : "posts are"} on the calendar. Your content is all set.`);
+      const response = await fetch(`${apiUrl}/api/scheduled-posts`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          posts: preview.map((post) => ({
+            media_name: post.mediaName,
+            date: post.date,
+            time: post.time,
+            platforms: post.platform,
+            caption: post.caption,
+          })),
+        }),
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to save scheduled posts"));
+      const savedPosts = parseScheduledPosts(await response.json());
+      setPosts((current) => sortScheduledPosts([
+        ...current,
+        ...savedPosts.filter((saved) => !current.some((post) => post.id === saved.id)),
+      ]));
+      setNotice(`${savedPosts.length} ${savedPosts.length === 1 ? "post is" : "posts are"} on the calendar. Schedule details are saved; media files and publishing are not connected yet.`);
     } catch (error) {
       console.error("Unable to save scheduled posts.", error);
-      setNotice("Your schedule couldn't be saved in this browser. Try removing some uploaded items and schedule again.");
+      setNotice(error instanceof Error ? error.message : "Your schedule couldn't be saved. Please try again.");
+    } finally {
+      setScheduleMutationPending(false);
     }
   }
 
-  function removePost(id: string) {
-    const next = posts.filter((post) => post.id !== id);
+  async function removePost(id: string) {
+    if (scheduleMutationPending) return;
+    setScheduleMutationPending(true);
     try {
-      window.localStorage.setItem("socialpilot-posts", JSON.stringify(next));
-      window.dispatchEvent(new Event("socialpilot-posts-updated"));
+      const response = await fetch(`${apiUrl}/api/scheduled-posts/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to remove the scheduled post"));
+      setPosts((current) => current.filter((post) => post.id !== id));
       setNotice("Post removed from your schedule.");
     } catch (error) {
       console.error("Unable to update saved schedules.", error);
-      setNotice("Unable to remove the post. Please try again.");
+      setNotice(error instanceof Error ? error.message : "Unable to remove the post. Please try again.");
+    } finally {
+      setScheduleMutationPending(false);
     }
   }
 
-  function reschedulePost(id: string, date: string) {
+  async function reschedulePost(id: string, date: string) {
     const movingPost = posts.find((post) => post.id === id);
-    if (!movingPost || movingPost.date === date) return;
+    if (!movingPost || movingPost.date === date || scheduleMutationPending) return;
     const collision = posts.some((post) => post.id !== id && post.date === date && post.time === movingPost.time && post.platform.some((platform) => movingPost.platform.includes(platform)));
     if (collision) {
       setNotice("There’s already a post planned for one of these channels at that time. Try another date.");
       return;
     }
-    const next = posts.map((post) => post.id === id ? { ...post, date } : post).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
+    setScheduleMutationPending(true);
     try {
-      window.localStorage.setItem("socialpilot-posts", JSON.stringify(next));
-      window.dispatchEvent(new Event("socialpilot-posts-updated"));
+      const response = await fetch(`${apiUrl}/api/scheduled-posts/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date }),
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to change the scheduled date"));
+      const updatedPost = parseScheduledPosts([await response.json()])[0];
+      setPosts((current) => sortScheduledPosts(current.map((post) => post.id === id ? updatedPost : post)));
       setNotice(`Post moved to ${friendlyDate(date)}.`);
     } catch (error) {
       console.error("Unable to update the scheduled date.", error);
-      setNotice("Unable to change the scheduled date. Please try again.");
+      setNotice(error instanceof Error ? error.message : "Unable to change the scheduled date. Please try again.");
+    } finally {
+      setScheduleMutationPending(false);
     }
   }
 
@@ -248,16 +470,25 @@ export default function DashboardApp({ section }: { section: string }) {
     setSelectedAccounts((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
-  const navContent = <><div className="sidebar-brand"><Logo href="/dashboard" /><button aria-label="Close navigation" className="mobile-close" onClick={() => setMobileOpen(false)}><Icon name="close" /></button></div><div className="workspace-switch"><div className="workspace-avatar">G</div><div><b>Good Things Studio</b><small>Free workspace</small></div><Icon name="down" size={15} /></div><nav className="side-nav">{navigation.map((item) => <div key={item.href}>{item.section && <div className="nav-section-label">{item.section}</div>}<Link href={item.href} onClick={() => setMobileOpen(false)} className={`nav-item ${section === item.href.slice(1) || (section === "create-post" && item.href === "/bulk-schedule") ? "nav-active" : ""}`}><Icon name={item.icon} /><span>{item.label}</span>{item.badge && <span className="nav-badge">{item.badge}</span>}</Link></div>)}</nav><div className="sidebar-bottom"><div className="plan-card"><div className="plan-card-top"><span className="plan-spark">✳</span><span>YOUR LITTLE CORNER</span></div><b>Ready to make a little more room?</b><p>Unlock more channels and plan further ahead.</p><button onClick={() => setNotice("Your workspace is on the free plan. Billing details will be available when a subscription is connected.")}>Explore plans <span>↗</span></button></div><Link href="/settings" className="user-profile"><div className="user-avatar">AM</div><span><b>Alex Morgan</b><small>Admin</small></span><Icon name="more" /></Link></div></>;
+  const initials = currentUser?.full_name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") ?? "";
+  const workspaceName = currentUser?.workspace_name ?? "Content-Flow";
+  const navContent = <><div className="sidebar-brand"><Logo href="/dashboard" /><button aria-label="Close navigation" className="mobile-close" onClick={() => setMobileOpen(false)}><Icon name="close" /></button></div><div className="workspace-switch"><div className="workspace-avatar">{workspaceName[0]?.toUpperCase()}</div><div><b>{workspaceName}</b><small>Workspace owner</small></div><Icon name="down" size={15} /></div><nav className="side-nav">{navigation.map((item) => <div key={item.href}>{item.section && <div className="nav-section-label">{item.section}</div>}<Link href={item.href} onClick={() => setMobileOpen(false)} className={`nav-item ${section === item.href.slice(1) || (section === "create-post" && item.href === "/bulk-schedule") ? "nav-active" : ""}`}><Icon name={item.icon} /><span>{item.label}</span>{item.badge && <span className="nav-badge">{item.badge}</span>}</Link></div>)}</nav><div className="sidebar-bottom"><div className="plan-card"><div className="plan-card-top"><span className="plan-spark">✳</span><span>YOUR LITTLE CORNER</span></div><b>Ready to make a little more room?</b><p>Unlock more channels and plan further ahead.</p><button onClick={() => setNotice("Your workspace is on the free plan. Billing details will be available when a subscription is connected.")}>Explore plans <span>↗</span></button></div><button type="button" className="user-profile" onClick={handleLogout} disabled={logoutPending} aria-label="Sign out of Content-Flow"><div className="user-avatar">{initials}</div><span><b>{currentUser?.full_name}</b><small>{logoutPending ? "Signing out…" : "Sign out"}</small></span><Icon name="more" /></button></div></>;
 
-  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>Good Things Studio</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><button aria-label="Search your workspace" className="icon-button search-button" onClick={() => setNotice("Workspace search is ready when you have more content to explore.")}><Icon name="search" /></button><div className="notification-wrap"><button aria-label="Notifications" className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" /><i /></button>{showNotifications && <div className="notification-popover"><b>You’re all caught up ✨</b><p>New post activity and account updates will show up here.</p><Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><Link href="/settings" className="topbar-avatar" aria-label="Open profile settings">AM</Link></div></header><div className="page-content">{section === "bulk-schedule" || section === "create-post" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span><span>Preview workspace · Sample data</span></footer></div></main></div>;
+  if (!sessionReady) {
+    return <main className="auth-check-screen"><Logo /><p>Checking your secure session…</p></main>;
+  }
+  if (!currentUser) {
+    return <main className="auth-check-screen"><Logo /><h1>Dashboard sign-in required</h1><p>{authError || "Sign in to continue to your workspace."}</p><Link className="button button-primary" href="/login">Sign in</Link></main>;
+  }
+
+  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>{workspaceName}</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><button aria-label="Search your workspace" className="icon-button search-button" onClick={() => setNotice("Workspace search is ready when you have more content to explore.")}><Icon name="search" /></button><div className="notification-wrap"><button aria-label="Notifications" className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" /><i /></button>{showNotifications && <div className="notification-popover"><b>You’re all caught up ✨</b><p>New post activity and account updates will show up here.</p><Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><button type="button" className="topbar-avatar" onClick={handleLogout} aria-label="Sign out of Content-Flow">{initials}</button></div></header><div className="page-content">{postsLoading && <p className="schedule-state" role="status">Loading your saved schedule…</p>}{postsLoadError && <div className="schedule-load-error" role="alert"><span>{postsLoadError}</span><button type="button" onClick={() => setPostsReloadKey((current) => current + 1)}>Try again</button></div>}{section === "create-post" || section === "review-queue" ? <SubmissionWorkflow view={section === "create-post" ? "submit" : "review"} setNotice={setNotice} /> : section === "bulk-schedule" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} saveDisabled={postsLoading || Boolean(postsLoadError) || scheduleMutationPending} saving={scheduleMutationPending} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span><span>Preview workspace · Sample data</span></footer></div></main></div>;
 }
 
 type BulkProps = {
   section: string; media: MediaItem[]; selected: string[]; setSelected: React.Dispatch<React.SetStateAction<string[]>>; onFilesDrop: (files: FileList | File[]) => void; onUploadChange: (event: ChangeEvent<HTMLInputElement>) => void;
   startDate: string; setStartDate: (value: string) => void; endDate: string; setEndDate: (value: string) => void; frequency: string; setFrequency: (value: string) => void; customDays: number[]; setCustomDays: React.Dispatch<React.SetStateAction<number[]>>; time: string; setTime: (value: string) => void;
   accounts: SocialAccount[]; selectedAccounts: string[]; toggleAccount: (id: string) => void; preview: Array<{ id: string; mediaId: string; mediaName: string; mediaKind: "image" | "video"; mediaUrl: string; date: string; time: string; platform: string[]; caption: string }>;
-  expectedCount: number; onSave: () => void; onMove: (source: number, target: number) => void; onRemovePreview: (mediaId: string) => void; onCaptionChange: (id: string, caption: string) => void; onDragStart: (event: DragEvent<HTMLElement>, index: number) => void; draggedPost: number | null; blocked: boolean; setNotice: (value: string) => void;
+  expectedCount: number; onSave: () => void; saveDisabled: boolean; saving: boolean; onMove: (source: number, target: number) => void; onRemovePreview: (mediaId: string) => void; onCaptionChange: (id: string, caption: string) => void; onDragStart: (event: DragEvent<HTMLElement>, index: number) => void; draggedPost: number | null; blocked: boolean; setNotice: (value: string) => void;
 };
 
 function BulkSchedule(props: BulkProps) {
@@ -283,6 +514,12 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
 }) {
   const [selectedMonth, setSelectedMonth] = useState(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), 1); });
   const [query, setQuery] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordChangePending, setPasswordChangePending] = useState(false);
+  const [passwordChangeMessage, setPasswordChangeMessage] = useState("");
+  const [passwordChangeError, setPasswordChangeError] = useState(false);
   const today = todayString();
   const upcoming = posts.filter((post) => post.date >= today).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const monthDays = new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate();
@@ -290,6 +527,47 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
   const changeMonth = (amount: number) => setSelectedMonth((current) => new Date(current.getFullYear(), current.getMonth() + amount, 1));
   const filteredPosts = posts.filter((post) => post.mediaName.toLowerCase().includes(query.toLowerCase()));
   const connectedCount = 3;
+  const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPasswordChangeMessage("");
+    setPasswordChangeError(false);
+    if (newPassword !== confirmPassword) {
+      setPasswordChangeError(true);
+      setPasswordChangeMessage("The new password and confirmation do not match.");
+      return;
+    }
+
+    setPasswordChangePending(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/auth/change-password`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      if (!response.ok) {
+        const errorPayload: unknown = await response.json().catch(() => null);
+        const detail =
+          typeof errorPayload === "object" &&
+          errorPayload !== null &&
+          "detail" in errorPayload &&
+          typeof errorPayload.detail === "string"
+            ? errorPayload.detail
+            : "Could not change your password. Please try again.";
+        throw new Error(detail);
+      }
+
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordChangeMessage("Your Content-Flow password has been updated. Other signed-in sessions have been logged out.");
+    } catch (error) {
+      setPasswordChangeError(true);
+      setPasswordChangeMessage(error instanceof Error ? error.message : "Could not change your password. Please try again.");
+    } finally {
+      setPasswordChangePending(false);
+    }
+  };
 
   const scheduleCalendar = <section className="panel calendar-panel"><div className="calendar-toolbar"><div><span className="calendar-month-label">YOUR MONTH, AT A GLANCE</span><h2>{selectedMonth.toLocaleDateString("en", { month: "long", year: "numeric" })}</h2></div><div className="calendar-toolbar-actions"><button aria-label="Previous month" onClick={() => changeMonth(-1)}>←</button><button onClick={() => setSelectedMonth(new Date())}>Today</button><button aria-label="Next month" onClick={() => changeMonth(1)}>→</button></div></div><div className="month-grid">{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => <div className="calendar-weekday" key={day}>{day}</div>)}{Array.from({ length: weekdayOffset }, (_, i) => <div key={`blank-${i}`} className="calendar-day calendar-blank" />)}{Array.from({ length: monthDays }, (_, index) => { const date = `${selectedMonth.getFullYear()}-${String(selectedMonth.getMonth() + 1).padStart(2, "0")}-${String(index + 1).padStart(2, "0")}`; const dayPosts = posts.filter((post) => post.date === date); return <div key={date} className={`calendar-day ${today === date ? "calendar-today" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const postId = event.dataTransfer.getData("text/plain"); if (postId) onReschedule(postId, date); }}><span className="calendar-day-number">{index + 1}</span>{dayPosts.slice(0, 3).map((post) => <button key={post.id} className="calendar-post-chip" draggable onDragStart={(event) => event.dataTransfer.setData("text/plain", post.id)} title={`${post.time} · ${post.mediaName}`} onClick={() => setNotice(`${friendlyDate(post.date)} at ${post.time} — ${post.mediaName}. Posts in this preview are pending.`)}><span>✳</span> {post.mediaName}</button>)}{dayPosts.length > 3 && <span className="more-posts">+{dayPosts.length - 3} more</span>}</div>; })}</div><div className="calendar-legend"><span><i className="legend-dot legend-pending" /> Pending</span><span><i className="legend-dot legend-published" /> Published</span><span><i className="legend-dot legend-failed" /> Failed</span><span className="calendar-legend-note">Drag a scheduled post to another day to reschedule it.</span></div></section>;
 
@@ -301,7 +579,7 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
     {section === "ai-captions" && <section className="panel ai-demo-panel"><div className="ai-demo-spark">✦</div><span className="calendar-month-label">A LITTLE SPARK FOR YOUR NEXT BIG IDEA</span><h2>Good words start with a good moment.</h2><p>Choose an image from your content library and create a draft you&apos;ll want to put your name on.</p><Link className="button button-primary" href="/bulk-schedule">Start with your content <span>↗</span></Link><div className="ai-suggestion"><span>✦ A CAPTION STARTER</span><p>“Finding joy in the in-between. The light, the quiet, the little things that make a day feel like yours.”</p><small>#LittleMoments　#GoodThings　#EverydayMagic</small></div><span className="ai-note">This is a writing prompt, not a connected generative AI service. Your voice always comes first.</span></section>}
     {section === "analytics" && <div className="analytics-layout"><section className="panel analytics-chart"><div className="section-card-heading"><div><span className="calendar-month-label">LITTLE WINS, ADDING UP</span><h2>The stories you shared</h2><p>Your overview, for the last 30 days.</p></div><span className="analytics-range">Last 30 days⌄</span></div><div className="analytics-number">12,840 <span>↑ 18.6% this month</span></div><div className="chart-area"><div className="chart-y-labels"><span>4k</span><span>3k</span><span>2k</span><span>1k</span><span>0</span></div><div className="chart-lines"><i /><i /><i /><i /><svg viewBox="0 0 600 155" preserveAspectRatio="none"><defs><linearGradient id="reach-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#b39bdb" stopOpacity=".3" /><stop offset="1" stopColor="#b39bdb" stopOpacity="0" /></linearGradient></defs><path d="M0 130 C40 130 35 92 90 106 S142 115 180 83 S236 105 265 73 S320 96 355 57 S415 81 450 51 S506 70 535 35 S573 44 600 15 L600 155 L0 155Z" fill="url(#reach-gradient)" /><path d="M0 130 C40 130 35 92 90 106 S142 115 180 83 S236 105 265 73 S320 96 355 57 S415 81 450 51 S506 70 535 35 S573 44 600 15" fill="none" stroke="#8e71c5" strokeWidth="3" vectorEffect="non-scaling-stroke" /></svg><div className="chart-x-labels"><span>Sep 12</span><span>Sep 18</span><span>Sep 24</span><span>Sep 30</span><span>Oct 6</span><span>Oct 12</span></div></div></div></section><section className="panel best-time-card"><span className="calendar-month-label">A GOOD TIME TO SAY HELLO</span><h2>Your best posting time</h2><div className="best-time-big">9:30 <span>AM</span></div><p>Your audience is most active on Wednesdays. Try sharing a little something around then.</p><div className="best-time-bars">{[30, 48, 65, 38, 88, 50, 32, 68, 42, 90, 57, 36, 66, 45, 72, 40].map((height, i) => <i key={i} style={{ height: `${height}%` }} className={height === 90 ? "bar-highlight" : ""} />)}</div><div className="best-time-days"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span></div></section></div>}
     {section === "team" && <section className="panel team-panel"><div className="section-card-heading"><div><span className="calendar-month-label">GOOD THINGS HAPPEN TOGETHER</span><h2>Your creative circle</h2><p>One lovely little team, making things happen.</p></div><button className="button button-primary" onClick={() => setNotice("Team invitations will be available when team workspaces are connected.")}>＋ Invite someone</button></div><div className="team-table"><div className="team-table-head"><span>YOUR PEOPLE</span><span>ROLE</span><span>STATUS</span></div><div className="team-table-row"><span className="team-member"><i className="user-avatar">AM</i><span><b>Alex Morgan</b><small>alex@goodthings.studio</small></span></span><span><b className="role-pill">Admin</b></span><span className="connection-state"><i /> You’re here</span></div>{[["Jamie Lee", "jamie@goodthings.studio", "Editor", "JL"], ["Riley Park", "riley@goodthings.studio", "Editor", "RP"]].map(([name, email, role, initials]) => <div className="team-table-row" key={email}><span className="team-member"><i className="user-avatar user-avatar-soft">{initials}</i><span><b>{name}</b><small>{email}</small></span></span><span><b className="role-pill">{role}</b></span><span className="connection-state"><i /> Active</span></div>)}</div></section>}
-    {section === "settings" && <section className="panel settings-panel"><span className="calendar-month-label">YOUR SPACE, YOUR WAY</span><h2>The little details.</h2><p>Make your workspace feel a little more like you.</p><div className="settings-form"><label><span>YOUR NAME</span><input defaultValue="Alex Morgan" /></label><label><span>EMAIL ADDRESS</span><input type="email" defaultValue="alex@goodthings.studio" /></label><label><span>COMPANY</span><input defaultValue="Good Things Studio" /></label><label><span>TIMEZONE</span><select defaultValue="local"><option value="local">Use my local timezone</option><option>Eastern Time (ET)</option><option>Pacific Time (PT)</option><option>UTC</option></select></label><div className="notification-setting"><div><b>Little reminders, when it matters</b><span>Get a heads-up when your posts are ready or need attention.</span></div><button aria-label="Toggle reminders" className="toggle-switch toggle-on" onClick={(event) => event.currentTarget.classList.toggle("toggle-on")}><i /></button></div><button className="button button-primary settings-save" onClick={() => setNotice("Profile preferences are saved for this preview.")}>Save my changes</button></div></section>}
+    {section === "settings" && <section className="panel settings-panel"><span className="calendar-month-label">ACCOUNT SECURITY</span><h2>Change your password</h2><p>This updates your Content-Flow password only. It does not change your email account password.</p><form className="settings-form password-change-form" onSubmit={handlePasswordChange}><label><span>CURRENT CONTENT-FLOW PASSWORD</span><input type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label><span>NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters.</small></label><label><span>CONFIRM NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><button className="button button-primary settings-save" type="submit" disabled={passwordChangePending}>{passwordChangePending ? "Updating..." : "Update password"}</button>{passwordChangeMessage && <p className={`password-change-message ${passwordChangeError ? "password-change-error" : "password-change-success"}`} role={passwordChangeError ? "alert" : "status"}>{passwordChangeMessage}</p>}</form></section>}
     {section !== "dashboard" && section !== "calendar" && section !== "content" && section !== "accounts" && section !== "ai-captions" && section !== "analytics" && section !== "team" && section !== "settings" && <><section className="panel upcoming-panel"><div className="section-card-heading"><div><span className="calendar-month-label">THE GOOD THINGS, COMING UP</span><h2>On your calendar <span className="post-count-pill">{upcoming.length}</span></h2></div><Link href="/calendar">See everything <span>↗</span></Link></div>{upcoming.length ? <div className="upcoming-list">{upcoming.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</div> : <div className="upcoming-empty"><div className="empty-sun">✳</div><b>A fresh page, ready for you.</b><p>Your next posts will live here once you&apos;ve planned them.</p><Link className="button button-primary" href="/bulk-schedule">Schedule your first batch <span>↗</span></Link></div>}</section><section className="panel schedule-overview-list"><div className="library-toolbar"><div><span className="calendar-month-label">SAVED IN YOUR BROWSER</span><h2>Planned posts</h2></div><span className="library-total">{posts.length} POSTS</span></div><div className="schedule-list-toolbar"><span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a post..." /></span><Link className="button button-outline" href="/bulk-schedule">＋ Plan more posts</Link></div>{filteredPosts.length === 0 ? <div className="upcoming-empty"><b>Nothing queued up just yet.</b><p>Your saved posts are kept on this device, ready when you are.</p></div> : filteredPosts.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</section></>}
   </>;
 }

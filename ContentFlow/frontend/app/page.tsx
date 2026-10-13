@@ -31,7 +31,7 @@ export default function Home() {
           <div className="social-proof"><div className="avatar-stack"><span>J</span><span>M</span><span>A</span><span>+</span></div><span>Made for the people behind the posts</span></div>
         </div>
 
-        <div className="hero-art" aria-label="Illustration of the SocialPilot content calendar">
+        <div className="hero-art" aria-label="Illustration of the Content-Flow content calendar">
           <div className="art-orb orb-one" /><div className="art-orb orb-two" />
           <div className="floating-note"><span className="note-sparkle">✳</span><span><strong>All caught up!</strong><small>Your next post is on its way</small></span><span className="checkmark">✓</span></div>
           <div className="hero-calendar">
@@ -49,7 +49,7 @@ export default function Home() {
         <div className="feature-heading"><span className="eyebrow">LESS BUSYWORK, MORE YOU</span><h2>Your whole social world.<br /><span>One easy rhythm.</span></h2></div>
         <div className="feature-cards">{benefits.map((item, i) => <article className="feature-card" key={item.title}><div className={`feature-icon icon-${i}`}>{item.icon}</div><h3>{item.title}</h3><p>{item.copy}</p><Link href="/dashboard">Explore the dashboard <span>↗</span></Link></article>)}</div>
       </section>
-      <footer className="marketing-footer"><Logo /><span>Made for what you make. © 2026 SocialPilot.AI</span></footer>
+      <footer className="marketing-footer"><Logo /><span>Made for what you make. © 2026 Content-Flow</span></footer>
     </main>
   );
 }
