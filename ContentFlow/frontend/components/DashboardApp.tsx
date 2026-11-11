@@ -10,6 +10,8 @@ import SubmissionWorkflow from "./SubmissionWorkflow";
 type MediaItem = { id: string; name: string; url: string; kind: "image" | "video" };
 type ScheduledPost = { id: string; mediaName: string; date: string; time: string; platform: string[]; caption: string };
 type SocialAccount = { id: string; label: string; handle: string; color: string; icon: string };
+type ConnectedSocialAccount = { id: string; platform: string; account_name: string; account_type: string };
+type SocialProviderStatus = { provider: string; configured: boolean; accounts: ConnectedSocialAccount[] };
 type DashboardUser = { id: string; email: string; full_name: string; workspace_name: string };
 
 const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -514,6 +516,14 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
 }) {
   const [selectedMonth, setSelectedMonth] = useState(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), 1); });
   const [query, setQuery] = useState("");
+  const [captionTopic, setCaptionTopic] = useState("");
+  const [captionAudience, setCaptionAudience] = useState("");
+  const [captionInstructions, setCaptionInstructions] = useState("");
+  const [captionLanguage, setCaptionLanguage] = useState("English");
+  const [captionPlatforms, setCaptionPlatforms] = useState<string[]>(["instagram", "linkedin"]);
+  const [captionDrafts, setCaptionDrafts] = useState<Array<{ platform: string; caption: string; hashtags: string[] }>>([]);
+  const [captionPending, setCaptionPending] = useState(false);
+  const [captionError, setCaptionError] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -523,6 +533,57 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
   const today = todayString();
   const upcoming = posts.filter((post) => post.date >= today).sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
   const monthDays = new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate();
+
+  function toggleCaptionPlatform(platform: string) {
+    setCaptionPlatforms((current) => current.includes(platform)
+      ? current.filter((item) => item !== platform)
+      : [...current, platform]);
+  }
+
+  async function generateCaptions(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCaptionError("");
+    setCaptionDrafts([]);
+    if (captionPlatforms.length === 0) {
+      setCaptionError("Choose at least one platform.");
+      return;
+    }
+    setCaptionPending(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/ai/captions`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: captionTopic,
+          audience: captionAudience,
+          instructions: captionInstructions,
+          language: captionLanguage,
+          platforms: captionPlatforms,
+        }),
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, "Caption generation failed"));
+      const result: unknown = await response.json();
+      if (typeof result !== "object" || result === null || !("posts" in result) || !Array.isArray(result.posts)) {
+        throw new Error("The AI service returned an unexpected response.");
+      }
+      const drafts = result.posts.filter((draft): draft is { platform: string; caption: string; hashtags: string[] } =>
+        typeof draft === "object" && draft !== null
+        && "platform" in draft && typeof draft.platform === "string"
+        && "caption" in draft && typeof draft.caption === "string"
+        && "hashtags" in draft && Array.isArray(draft.hashtags)
+        && draft.hashtags.every((tag: unknown) => typeof tag === "string"),
+      );
+      if (drafts.length !== result.posts.length || drafts.length !== captionPlatforms.length) {
+        throw new Error("The AI service did not return one valid caption for each platform.");
+      }
+      setCaptionDrafts(drafts);
+    } catch (error) {
+      setCaptionError(error instanceof Error ? error.message : "Caption generation failed. Please try again.");
+    } finally {
+      setCaptionPending(false);
+    }
+  }
   const weekdayOffset = (new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).getDay() + 6) % 7;
   const changeMonth = (amount: number) => setSelectedMonth((current) => new Date(current.getFullYear(), current.getMonth() + amount, 1));
   const filteredPosts = posts.filter((post) => post.mediaName.toLowerCase().includes(query.toLowerCase()));
@@ -575,13 +636,135 @@ function SectionContent({ section, sectionName, posts, media, onUploadChange, on
     {section === "dashboard" && <><div className="overview-welcome"><div className="welcome-orb">✳</div><div><span className="welcome-kicker">MONDAY, OCTOBER 12 <span>·</span> A NEW WEEK BEGINS</span><h2>Good morning, Alex <span>☀</span></h2><p>Big plans or little moments — there&apos;s room for all of it here.</p></div><Link href="/bulk-schedule" className="welcome-link">Plan your week <span>↗</span></Link></div><div className="stats-grid"><article className="stat-card"><div className="stat-label">TOTAL POSTS <span className="stat-icon lavender"><Icon name="calendar" size={17} /></span></div><b>{posts.length + 42}</b><span className="stat-caption">posts in your planner</span><div className="stat-chart"><i /><i /><i /><i /><i /><i /><i /></div></article><article className="stat-card"><div className="stat-label">PUBLISHED <span className="stat-icon green"><span>✓</span></span></div><b>38</b><span className="stat-caption"><span className="stat-up">↗ 12%</span> vs. last month</span><div className="stat-progress"><i /></div></article><article className="stat-card"><div className="stat-label">FAILED <span className="stat-icon rose"><span>!</span></span></div><b>1</b><span className="stat-caption">needs a quick look</span><button className="failed-note" onClick={() => setNotice("This sample post could not publish because no platform authorization is connected to the preview workspace.")}>View details ↗</button></article><article className="stat-card"><div className="stat-label">UP NEXT <span className="stat-icon peach"><Icon name="clock" size={17} /></span></div><b>{upcoming.length || 3}</b><span className="stat-caption">posts ready to go</span><div className="stat-sparkline">⌁</div></article><article className="stat-card"><div className="stat-label">CHANNELS <span className="stat-icon blue"><Icon name="share" size={16} /></span></div><b>3 <span className="stat-suffix">of 5</span></b><span className="stat-caption">your little corner of the internet</span><div className="stat-avatars">{accounts.slice(0, 3).map((item) => <i key={item.id} style={{ "--account-color": item.color } as React.CSSProperties}>{item.icon}</i>)}</div></article></div><div className="overview-grid"><section className="panel upcoming-panel"><div className="section-card-heading"><div><span className="calendar-month-label">THE GOOD THINGS, COMING UP</span><h2>On your calendar <span className="post-count-pill">{upcoming.length}</span></h2></div><Link href="/calendar">See everything <span>↗</span></Link></div>{upcoming.length === 0 ? <div className="upcoming-empty"><div className="empty-sun">✳</div><b>A fresh page, ready for you.</b><p>Your next posts will live here once you&apos;ve planned them.</p><Link className="button button-primary" href="/bulk-schedule">Schedule your first batch <span>↗</span></Link></div> : <div className="upcoming-list">{upcoming.slice(0, 4).map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} />)}</div>}<Link href="/bulk-schedule" className="today-create"><span className="today-create-icon">＋</span><span><b>There&apos;s always room for one more.</b><small>Add a little something to your schedule.</small></span><span className="create-arrow">↗</span></Link></section><section className="panel overview-side-panel"><div className="section-card-heading"><div><span className="calendar-month-label">YOUR CHANNELS, TOGETHER</span><h2>Connected accounts</h2></div><Link href="/accounts">Manage <span>↗</span></Link></div><div className="connected-list">{accounts.slice(0, connectedCount).map((account) => <div className="connected-row" key={account.id}><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span className="connected-text"><b>{account.label}</b><small>{account.handle}</small></span><span className="connection-state"><i /> Connected</span></div>)}</div><div className="accounts-footnote"><span>✳</span> All connected. Everything is looking good.</div></section></div></>}
     {section === "calendar" && scheduleCalendar}
     {section === "content" && <section className="panel library-panel"><div className="library-toolbar"><div><span className="calendar-month-label">YOUR LITTLE CONTENT CORNER</span><h2>All your content</h2><p>Keep your campaign moments neat, tidy, and right where you need them.</p></div><span className="library-total">{media.length + demoMedia.length} ITEMS</span></div><div className="media-folder-row"><button className="folder-pill folder-selected">✳ All content</button><button className="folder-pill">☼ January campaign <span>8</span></button><button className="folder-pill">✿ Everyday moments <span>12</span></button><button className="folder-add" onClick={() => setNotice("Give your next campaign a name when you're ready to organize your content.")}>＋ New collection</button></div><div className="library-search"><Icon name="search" size={17} /><input placeholder="Find a photo or video..." value={query} onChange={(event) => setQuery(event.target.value)} /><span>⌘ K</span></div><div className="library-grid">{media.map((item) => <article className="library-card" key={item.id}><div className="library-image">{item.kind === "image" ? <Image src={item.url} alt={item.name} fill sizes="(max-width: 700px) 33vw, 180px" unoptimized /> : <video src={item.url} muted aria-label={item.name} />}<span className="library-format">{item.kind === "video" ? "VIDEO" : "PHOTO"}</span><button className="library-delete" aria-label={`Delete ${item.name}`} onClick={() => onRemoveMedia(item.id)}>⋯</button></div><div className="library-card-meta"><b>{item.name}</b><span>Just now · Unfiled</span></div></article>)}{demoMedia.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())).map((item) => <article className="library-card" key={item.name}><div className={`library-image ${item.className}`}><span className="library-art-symbol">{item.label}</span><span className="library-format">{item.type.toUpperCase()}</span><button className="library-delete" aria-label={`Options for ${item.name}`} onClick={() => setNotice("Demo media is here to give you a feel for your content library.")}>⋯</button></div><div className="library-card-meta"><b>{item.name}</b><span>January campaign · Oct 10</span></div></article>)}<label className="library-add-tile"><Icon name="plus" size={22} /><b>Add more content</b><span>Images and videos</span><input className="file-picker-input" aria-label="Add more content" type="file" accept="image/*,video/*" multiple onChange={onUploadChange} /></label></div></section>}
-    {section === "accounts" && <section className="panel manage-accounts-panel"><div className="section-card-heading"><div><span className="calendar-month-label">YOUR CORNER OF THE INTERNET</span><h2>Everything, in good company.</h2><p>Your channels stay right here, together.</p></div><button className="button button-outline" onClick={() => setNotice("Social account authorization will be available when platform integrations are connected.")}>＋ Connect an account</button></div><div className="account-manage-grid">{accounts.map((account, index) => <article className="account-manage-card" key={account.id}><span className="account-icon account-icon-large" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span className="connection-state"><i /> {index < 3 ? "Connected" : "Not connected"}</span><h3>{account.label}</h3><p>{index < 3 ? account.handle : "Your next channel is waiting"}</p><button onClick={() => setNotice(index < 3 ? `${account.label} is connected to your workspace.` : "Social account authorization will be available when platform integrations are connected.")}>{index < 3 ? "Manage connection ↗" : "Connect account ↗"}</button></article>)}</div><div className="integration-note"><span>✳</span><span>Connecting an account needs the platform&apos;s secure sign-in and authorization. We&apos;ll only publish when you say so.</span></div></section>}
-    {section === "ai-captions" && <section className="panel ai-demo-panel"><div className="ai-demo-spark">✦</div><span className="calendar-month-label">A LITTLE SPARK FOR YOUR NEXT BIG IDEA</span><h2>Good words start with a good moment.</h2><p>Choose an image from your content library and create a draft you&apos;ll want to put your name on.</p><Link className="button button-primary" href="/bulk-schedule">Start with your content <span>↗</span></Link><div className="ai-suggestion"><span>✦ A CAPTION STARTER</span><p>“Finding joy in the in-between. The light, the quiet, the little things that make a day feel like yours.”</p><small>#LittleMoments　#GoodThings　#EverydayMagic</small></div><span className="ai-note">This is a writing prompt, not a connected generative AI service. Your voice always comes first.</span></section>}
+    {section === "accounts" && <SocialAccountsSection setNotice={setNotice} />}
+    {section === "ai-captions" && <section className="panel ai-demo-panel"><div className="ai-demo-spark">✦</div><span className="calendar-month-label">PLATFORM-SPECIFIC DRAFTS</span><h2>Generate captions and hashtags</h2><p>Each selected channel gets its own draft. Review every detail before using it.</p><form className="ai-generator-form" onSubmit={generateCaptions}><label><span>WHAT IS THE POST ABOUT?</span><textarea required maxLength={500} value={captionTopic} onChange={(event) => setCaptionTopic(event.target.value)} placeholder="Describe the announcement, product, event, or story." /></label><label><span>WHO IS IT FOR?</span><input required maxLength={300} value={captionAudience} onChange={(event) => setCaptionAudience(event.target.value)} placeholder="e.g. university students" /></label><label><span>LANGUAGE</span><select value={captionLanguage} onChange={(event) => setCaptionLanguage(event.target.value)}><option>English</option><option>Urdu</option><option>English and Urdu</option></select></label><label><span>FACTS AND BRAND NOTES</span><textarea maxLength={2000} value={captionInstructions} onChange={(event) => setCaptionInstructions(event.target.value)} placeholder="Verified details, tone, required wording, or anything the AI must not assume." /></label><fieldset><legend>PLATFORMS</legend><div className="ai-platform-choices">{accounts.map((account) => <label key={account.id}><input type="checkbox" checked={captionPlatforms.includes(account.id)} onChange={() => toggleCaptionPlatform(account.id)} /><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span>{account.label}</label>)}</div></fieldset><button className="button button-primary" type="submit" disabled={captionPending}>{captionPending ? "Generating drafts…" : "Generate drafts"}</button></form>{captionError && <p className="ai-generator-error" role="alert">{captionError}</p>}{captionDrafts.length > 0 && <div className="ai-generated-list" aria-live="polite">{captionDrafts.map((draft) => { const account = accounts.find((item) => item.id === draft.platform); const hashtags = draft.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" "); return <article className="ai-generated-draft" key={draft.platform}><div><span>{account?.label ?? draft.platform}</span><button type="button" onClick={() => navigator.clipboard.writeText(`${draft.caption}\n\n${hashtags}`).then(() => setNotice(`${account?.label ?? "Caption"} draft copied.`)).catch(() => setNotice("Clipboard access is unavailable in this browser."))}>Copy</button></div><p>{draft.caption}</p>{hashtags && <small>{hashtags}</small>}</article>; })}</div>}<span className="ai-note">Generated drafts are suggestions. Verify all facts and platform rules before publishing.</span></section>}
     {section === "analytics" && <div className="analytics-layout"><section className="panel analytics-chart"><div className="section-card-heading"><div><span className="calendar-month-label">LITTLE WINS, ADDING UP</span><h2>The stories you shared</h2><p>Your overview, for the last 30 days.</p></div><span className="analytics-range">Last 30 days⌄</span></div><div className="analytics-number">12,840 <span>↑ 18.6% this month</span></div><div className="chart-area"><div className="chart-y-labels"><span>4k</span><span>3k</span><span>2k</span><span>1k</span><span>0</span></div><div className="chart-lines"><i /><i /><i /><i /><svg viewBox="0 0 600 155" preserveAspectRatio="none"><defs><linearGradient id="reach-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#b39bdb" stopOpacity=".3" /><stop offset="1" stopColor="#b39bdb" stopOpacity="0" /></linearGradient></defs><path d="M0 130 C40 130 35 92 90 106 S142 115 180 83 S236 105 265 73 S320 96 355 57 S415 81 450 51 S506 70 535 35 S573 44 600 15 L600 155 L0 155Z" fill="url(#reach-gradient)" /><path d="M0 130 C40 130 35 92 90 106 S142 115 180 83 S236 105 265 73 S320 96 355 57 S415 81 450 51 S506 70 535 35 S573 44 600 15" fill="none" stroke="#8e71c5" strokeWidth="3" vectorEffect="non-scaling-stroke" /></svg><div className="chart-x-labels"><span>Sep 12</span><span>Sep 18</span><span>Sep 24</span><span>Sep 30</span><span>Oct 6</span><span>Oct 12</span></div></div></div></section><section className="panel best-time-card"><span className="calendar-month-label">A GOOD TIME TO SAY HELLO</span><h2>Your best posting time</h2><div className="best-time-big">9:30 <span>AM</span></div><p>Your audience is most active on Wednesdays. Try sharing a little something around then.</p><div className="best-time-bars">{[30, 48, 65, 38, 88, 50, 32, 68, 42, 90, 57, 36, 66, 45, 72, 40].map((height, i) => <i key={i} style={{ height: `${height}%` }} className={height === 90 ? "bar-highlight" : ""} />)}</div><div className="best-time-days"><span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span></div></section></div>}
     {section === "team" && <section className="panel team-panel"><div className="section-card-heading"><div><span className="calendar-month-label">GOOD THINGS HAPPEN TOGETHER</span><h2>Your creative circle</h2><p>One lovely little team, making things happen.</p></div><button className="button button-primary" onClick={() => setNotice("Team invitations will be available when team workspaces are connected.")}>＋ Invite someone</button></div><div className="team-table"><div className="team-table-head"><span>YOUR PEOPLE</span><span>ROLE</span><span>STATUS</span></div><div className="team-table-row"><span className="team-member"><i className="user-avatar">AM</i><span><b>Alex Morgan</b><small>alex@goodthings.studio</small></span></span><span><b className="role-pill">Admin</b></span><span className="connection-state"><i /> You’re here</span></div>{[["Jamie Lee", "jamie@goodthings.studio", "Editor", "JL"], ["Riley Park", "riley@goodthings.studio", "Editor", "RP"]].map(([name, email, role, initials]) => <div className="team-table-row" key={email}><span className="team-member"><i className="user-avatar user-avatar-soft">{initials}</i><span><b>{name}</b><small>{email}</small></span></span><span><b className="role-pill">{role}</b></span><span className="connection-state"><i /> Active</span></div>)}</div></section>}
     {section === "settings" && <section className="panel settings-panel"><span className="calendar-month-label">ACCOUNT SECURITY</span><h2>Change your password</h2><p>This updates your Content-Flow password only. It does not change your email account password.</p><form className="settings-form password-change-form" onSubmit={handlePasswordChange}><label><span>CURRENT CONTENT-FLOW PASSWORD</span><input type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label><span>NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters.</small></label><label><span>CONFIRM NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><button className="button button-primary settings-save" type="submit" disabled={passwordChangePending}>{passwordChangePending ? "Updating..." : "Update password"}</button>{passwordChangeMessage && <p className={`password-change-message ${passwordChangeError ? "password-change-error" : "password-change-success"}`} role={passwordChangeError ? "alert" : "status"}>{passwordChangeMessage}</p>}</form></section>}
     {section !== "dashboard" && section !== "calendar" && section !== "content" && section !== "accounts" && section !== "ai-captions" && section !== "analytics" && section !== "team" && section !== "settings" && <><section className="panel upcoming-panel"><div className="section-card-heading"><div><span className="calendar-month-label">THE GOOD THINGS, COMING UP</span><h2>On your calendar <span className="post-count-pill">{upcoming.length}</span></h2></div><Link href="/calendar">See everything <span>↗</span></Link></div>{upcoming.length ? <div className="upcoming-list">{upcoming.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</div> : <div className="upcoming-empty"><div className="empty-sun">✳</div><b>A fresh page, ready for you.</b><p>Your next posts will live here once you&apos;ve planned them.</p><Link className="button button-primary" href="/bulk-schedule">Schedule your first batch <span>↗</span></Link></div>}</section><section className="panel schedule-overview-list"><div className="library-toolbar"><div><span className="calendar-month-label">SAVED IN YOUR BROWSER</span><h2>Planned posts</h2></div><span className="library-total">{posts.length} POSTS</span></div><div className="schedule-list-toolbar"><span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a post..." /></span><Link className="button button-outline" href="/bulk-schedule">＋ Plan more posts</Link></div>{filteredPosts.length === 0 ? <div className="upcoming-empty"><b>Nothing queued up just yet.</b><p>Your saved posts are kept on this device, ready when you are.</p></div> : filteredPosts.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</section></>}
   </>;
+}
+
+function SocialAccountsSection({ setNotice }: { setNotice: (notice: string) => void }) {
+  const [providerStatus, setProviderStatus] = useState<SocialProviderStatus | null>(null);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState("");
+  const [disconnectingId, setDisconnectingId] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const query = new URLSearchParams(window.location.search);
+    const oauthResult = query.get("social");
+    if (oauthResult) {
+      const messages: Record<string, string> = {
+        connected: "Meta connected. Authorized Facebook Pages and linked Instagram professional accounts are listed below.",
+        invalid_state: "The Meta sign-in could not be verified. Please connect again.",
+        cancelled: "Meta sign-in was cancelled.",
+        no_accounts: "Meta authorized successfully, but no Facebook Pages or linked Instagram professional accounts were found.",
+        connect_failed: "Meta could not connect. Check your app permissions and try again.",
+      };
+      setNotice(messages[oauthResult] ?? "Meta sign-in did not complete.");
+      query.delete("social");
+      const cleanUrl = `${window.location.pathname}${query.toString() ? `?${query}` : ""}${window.location.hash}`;
+      window.history.replaceState(window.history.state, "", cleanUrl);
+    }
+
+    async function loadMetaAccounts() {
+      setAccountsLoading(true);
+      setAccountsError("");
+      try {
+        const response = await fetch(`${apiUrl}/api/social/providers`, {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to load social account connections"));
+        const result: unknown = await response.json();
+        if (!Array.isArray(result)) throw new Error("The server returned an invalid social provider list.");
+        const meta = result.find((item): item is SocialProviderStatus =>
+          typeof item === "object" && item !== null
+          && "provider" in item && item.provider === "meta"
+          && "configured" in item && typeof item.configured === "boolean"
+          && "accounts" in item && Array.isArray(item.accounts),
+        );
+        if (!meta) throw new Error("The server did not return Meta connection status.");
+        const connectedAccounts = meta.accounts.filter((item): item is ConnectedSocialAccount =>
+          typeof item === "object" && item !== null
+          && "id" in item && typeof item.id === "string"
+          && "platform" in item && typeof item.platform === "string"
+          && "account_name" in item && typeof item.account_name === "string"
+          && "account_type" in item && typeof item.account_type === "string",
+        );
+        if (connectedAccounts.length !== meta.accounts.length) {
+          throw new Error("The server returned an invalid Meta account.");
+        }
+        setProviderStatus({ ...meta, accounts: connectedAccounts });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setAccountsError(error instanceof Error ? error.message : "Could not load connected accounts.");
+      } finally {
+        if (!controller.signal.aborted) setAccountsLoading(false);
+      }
+    }
+
+    void loadMetaAccounts();
+    return () => controller.abort();
+  }, [setNotice]);
+
+  function connectMeta() {
+    setNotice("Meta OAuth is not configured. Set META_APP_ID, META_APP_SECRET, and CONTENT_FLOW_TOKEN_ENCRYPTION_KEY in the backend environment, then restart the backend.");
+  }
+
+  function metaConnectControl(label: string) {
+    if (providerStatus?.configured) {
+      return <a className="button button-outline" href={`${apiUrl}/api/social/oauth/meta/start`}>{label}</a>;
+    }
+    return <button className="button button-outline" onClick={connectMeta}>{label}</button>;
+  }
+
+  async function disconnectMetaAccount(accountId: string, accountName: string) {
+    setDisconnectingId(accountId);
+    try {
+      const response = await fetch(`${apiUrl}/api/social/accounts/${encodeURIComponent(accountId)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to disconnect this account"));
+      setProviderStatus((current) => current
+        ? { ...current, accounts: current.accounts.filter((account) => account.id !== accountId) }
+        : current);
+      setNotice(`${accountName} disconnected from this workspace.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to disconnect this account.");
+    } finally {
+      setDisconnectingId("");
+    }
+  }
+
+  return <section className="panel manage-accounts-panel">
+    <div className="section-card-heading">
+      <div><span className="calendar-month-label">SOCIAL CONNECTIONS</span><h2>Your authorized accounts</h2><p>Connect Facebook Pages and their linked Instagram professional accounts through Meta sign-in.</p></div>
+      {metaConnectControl("＋ Connect Meta account")}
+    </div>
+    {accountsError && <p className="schedule-load-error" role="alert">{accountsError}</p>}
+    <div className="account-manage-grid">{accounts.map((account) => {
+      const metaPlatform = account.id === "facebook" || account.id === "instagram";
+      const connectedAccounts = providerStatus?.accounts.filter((connected) => connected.platform === account.id) ?? [];
+      const connected = connectedAccounts.length > 0;
+      return <article className="account-manage-card" key={account.id}>
+        <span className="account-icon account-icon-large" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span>
+        <span className={`connection-state ${connected ? "social-connected" : "social-not-connected"}`}><i />{accountsLoading ? "Checking" : connected ? "Connected" : "Not connected"}</span>
+        <h3>{account.label}</h3>
+        {connected ? connectedAccounts.map((connectedAccount) => <div className="social-connected-account" key={connectedAccount.id}>
+          <p>{connectedAccount.account_name} · {connectedAccount.account_type}</p>
+          <button type="button" disabled={disconnectingId === connectedAccount.id} onClick={() => void disconnectMetaAccount(connectedAccount.id, connectedAccount.account_name)}>{disconnectingId === connectedAccount.id ? "Disconnecting…" : "Disconnect"}</button>
+        </div>) : <p>{accountsLoading ? "Loading authorization status…" : metaPlatform ? "Connect through Meta OAuth" : "Not included in this Meta-only setup"}</p>}
+        {metaPlatform
+          ? metaConnectControl(connected ? "Connect another Meta account ↗" : "Connect with Meta ↗")
+          : <button type="button" disabled title="This platform is outside the current Meta-only integration">Available in a later integration</button>}
+      </article>;
+    })}</div>
+    <div className="integration-note"><span>✳</span><span>Meta sign-in can discover Pages available to you and Instagram professional accounts linked to those Pages. OAuth authorization is separate from publishing; publishing and scheduled posting have not been implemented yet.</span></div>
+  </section>;
 }
 
 function UpcomingRow({ post, accounts, onRemove }: { post: ScheduledPost; accounts: SocialAccount[]; onRemove?: () => void }) {

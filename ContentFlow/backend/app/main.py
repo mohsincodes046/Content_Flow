@@ -9,12 +9,29 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
+import httpx
+from cryptography.fernet import Fernet
+from dotenv import load_dotenv
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pwdlib import PasswordHash
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app import social_oauth
+
+
+def load_backend_environment(env_file: Path | None = None) -> None:
+    load_dotenv(
+        dotenv_path=env_file or Path(__file__).resolve().parent.parent / ".env",
+        override=False,
+    )
+
+
+load_backend_environment()
 
 
 Platform = Literal["instagram", "facebook", "linkedin", "youtube", "tiktok"]
@@ -68,6 +85,45 @@ class SubmissionCreate(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("Each uploaded asset can only be attached once.")
         return value
+
+
+class CaptionGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str = Field(min_length=1, max_length=500)
+    audience: str = Field(min_length=1, max_length=300)
+    instructions: str = Field(default="", max_length=2000)
+    language: str = Field(default="English", min_length=1, max_length=60)
+    platforms: list[Platform] = Field(min_length=1, max_length=5)
+
+    @field_validator("topic", "audience", "instructions", "language", mode="before")
+    @classmethod
+    def strip_caption_text(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Text fields must be strings.")
+        return value.strip()
+
+    @field_validator("platforms")
+    @classmethod
+    def reject_duplicate_caption_platforms(cls, value: list[Platform]) -> list[Platform]:
+        if len(value) != len(set(value)):
+            raise ValueError("Each platform can only be selected once.")
+        return value
+
+
+class CaptionDraft(BaseModel):
+    platform: Platform
+    caption: str = Field(min_length=1, max_length=5000)
+    hashtags: list[str] = Field(max_length=15)
+
+
+class CaptionDrafts(BaseModel):
+    posts: list[CaptionDraft] = Field(min_length=1, max_length=5)
+
+
+class CaptionGenerationResponse(BaseModel):
+    provider: Literal["openai", "gemini", "claude"]
+    posts: list[CaptionDraft]
 
 
 class RegistrationCreate(BaseModel):
@@ -187,6 +243,22 @@ class SessionResponse(BaseModel):
     workspace_name: str
 
 
+class SocialAccountResponse(BaseModel):
+    id: str
+    platform: Platform
+    account_id: str
+    account_name: str
+    account_type: str
+    connected_at: str
+    expires_at: Optional[str]
+
+
+class SocialProviderStatus(BaseModel):
+    provider: Literal["meta", "tiktok", "linkedin", "youtube"]
+    configured: bool
+    accounts: list[SocialAccountResponse]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -268,6 +340,30 @@ def initialize_storage() -> None:
             );
             CREATE INDEX IF NOT EXISTS scheduled_posts_user_date_idx
                 ON scheduled_posts(user_id, scheduled_date, scheduled_time);
+
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                state_hash TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                expires_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS social_accounts (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                account_name TEXT NOT NULL,
+                account_type TEXT NOT NULL,
+                encrypted_tokens TEXT NOT NULL,
+                expires_at TEXT,
+                connected_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, platform, account_id)
+            );
+            CREATE INDEX IF NOT EXISTS social_accounts_user_idx
+                ON social_accounts(user_id, platform);
             """
         )
         submission_columns = {
@@ -308,6 +404,24 @@ app.add_middleware(
 
 def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def token_cipher() -> Fernet:
+    key = os.environ.get("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Configure CONTENT_FLOW_TOKEN_ENCRYPTION_KEY on the backend.")
+    try:
+        return Fernet(key.encode("ascii"))
+    except (ValueError, UnicodeEncodeError) as error:
+        raise RuntimeError("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY must be a valid Fernet key.") from error
+
+
+def public_api_url() -> str:
+    return os.environ.get("CONTENT_FLOW_API_PUBLIC_URL", os.environ.get("RENDER_EXTERNAL_URL", "http://127.0.0.1:8000")).rstrip("/")
+
+
+def public_frontend_url() -> str:
+    return os.environ.get("CONTENT_FLOW_FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 
 def create_session(user_id: str, response: Response) -> None:
@@ -606,6 +720,287 @@ def scheduled_post_conflicts(
 @app.get("/api/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/social/providers", response_model=list[SocialProviderStatus])
+def list_social_providers(
+    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+) -> list[SocialProviderStatus]:
+    with connect_database() as connection:
+        rows = connection.execute(
+            "SELECT * FROM social_accounts WHERE user_id = ? ORDER BY platform, account_name",
+            (user["id"],),
+        ).fetchall()
+    account_responses = [
+        SocialAccountResponse(
+            id=row["id"],
+            platform=row["platform"],
+            account_id=row["account_id"],
+            account_name=row["account_name"],
+            account_type=row["account_type"],
+            connected_at=row["connected_at"],
+            expires_at=row["expires_at"],
+        )
+        for row in rows
+    ]
+    accounts_by_provider: dict[str, list[SocialAccountResponse]] = {}
+    for account, row in zip(account_responses, rows):
+        accounts_by_provider.setdefault(row["provider"], []).append(account)
+
+    results: list[SocialProviderStatus] = []
+    for provider in social_oauth.PROVIDER_SETTINGS:
+        try:
+            social_oauth.get_provider_settings(provider)
+            token_cipher()
+            configured = True
+        except (RuntimeError, ValueError):
+            configured = False
+        results.append(SocialProviderStatus(
+            provider=provider,
+            configured=configured,
+            accounts=accounts_by_provider.get(provider, []),
+        ))
+    return results
+
+
+@app.get("/api/social/oauth/{provider}/start")
+def start_social_oauth(
+    provider: str,
+    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+) -> RedirectResponse:
+    try:
+        settings = social_oauth.get_provider_settings(provider)
+        token_cipher()
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="Unsupported social account provider.") from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    api_url = public_api_url()
+    if urlsplit(api_url).scheme != "https":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Meta OAuth requires an HTTPS API callback. Set "
+                "CONTENT_FLOW_API_PUBLIC_URL to your HTTPS tunnel or deployment URL."
+            ),
+        )
+
+    state = secrets.token_urlsafe(32)
+    redirect_uri = f"{api_url}/api/social/oauth/{provider}/callback"
+    with connect_database() as connection:
+        connection.execute("DELETE FROM oauth_states WHERE expires_at <= ?", (utc_now(),))
+        connection.execute(
+            "INSERT INTO oauth_states (state_hash, provider, user_id, expires_at) VALUES (?, ?, ?, ?)",
+            (token_digest(state), provider, user["id"], (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()),
+        )
+    return RedirectResponse(
+        social_oauth.build_authorization_url(provider, settings, redirect_uri, state),
+        status_code=status.HTTP_302_FOUND,
+    )
+
+
+@app.get("/api/social/oauth/{provider}/callback")
+async def finish_social_oauth(
+    provider: str,
+    state: Optional[str] = None,
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+) -> RedirectResponse:
+    def finish(reason: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"{public_frontend_url()}/accounts?social={reason}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    if not state:
+        return finish("invalid_state")
+    with connect_database() as connection:
+        state_row = connection.execute(
+            "SELECT user_id FROM oauth_states WHERE state_hash = ? AND provider = ? AND expires_at > ?",
+            (token_digest(state), provider, utc_now()),
+        ).fetchone()
+        connection.execute("DELETE FROM oauth_states WHERE state_hash = ?", (token_digest(state),))
+    if state_row is None:
+        return finish("invalid_state")
+    if error or not code:
+        return finish("cancelled")
+
+    redirect_uri = f"{public_api_url()}/api/social/oauth/{provider}/callback"
+    try:
+        settings = social_oauth.get_provider_settings(provider)
+        token_data = await social_oauth.exchange_authorization_code(provider, settings, code, redirect_uri)
+        accounts = await social_oauth.retrieve_connected_accounts(provider, token_data)
+        if not accounts:
+            return finish("no_accounts")
+        cipher = token_cipher()
+        now = utc_now()
+        with connect_database() as connection:
+            for account in accounts:
+                encrypted_tokens = cipher.encrypt(json.dumps(account["tokens"]).encode("utf-8")).decode("ascii")
+                connection.execute(
+                    """
+                    INSERT INTO social_accounts (
+                        id, user_id, provider, platform, account_id, account_name,
+                        account_type, encrypted_tokens, expires_at, connected_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, platform, account_id) DO UPDATE SET
+                        provider = excluded.provider,
+                        account_name = excluded.account_name,
+                        account_type = excluded.account_type,
+                        encrypted_tokens = excluded.encrypted_tokens,
+                        expires_at = excluded.expires_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(uuid4()), state_row["user_id"], provider, account["platform"],
+                        account["account_id"], account["account_name"], account["account_type"],
+                        encrypted_tokens, account["tokens"].get("expires_at"), now, now,
+                    ),
+                )
+    except (httpx.HTTPError, RuntimeError, ValueError, KeyError):
+        return finish("connect_failed")
+    return finish("connected")
+
+
+@app.delete("/api/social/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
+def disconnect_social_account(
+    account_id: str,
+    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+) -> Response:
+    with connect_database() as connection:
+        result = connection.execute(
+            "DELETE FROM social_accounts WHERE id = ? AND user_id = ?",
+            (account_id, user["id"]),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Social account not found.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+async def call_caption_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+    async with httpx.AsyncClient(timeout=45) as client:
+        if provider == "openai":
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "instructions": prompt,
+                    "input": "Generate one distinct post for each requested platform.",
+                    "text": {"format": {"type": "json_object"}},
+                },
+            )
+        elif provider == "gemini":
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": api_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json"},
+                },
+            )
+        else:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 1500,
+                    "system": prompt,
+                    "messages": [{
+                        "role": "user",
+                        "content": "Generate one distinct post for each requested platform and return only the requested JSON.",
+                    }],
+                },
+            )
+        response.raise_for_status()
+        result = response.json()
+
+    if provider == "openai":
+        text = result.get("output_text")
+        if not isinstance(text, str):
+            text = "".join(
+                part["text"]
+                for item in result.get("output", [])
+                for part in item.get("content", [])
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+    elif provider == "gemini":
+        text = "".join(
+            part["text"]
+            for candidate in result.get("candidates", [])
+            for part in candidate.get("content", {}).get("parts", [])
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    else:
+        text = "".join(
+            block["text"]
+            for block in result.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+    if not text:
+        raise ValueError("The AI provider returned no caption text.")
+    return text
+
+
+@app.post("/api/ai/captions", response_model=CaptionGenerationResponse)
+async def generate_platform_captions(
+    payload: CaptionGenerationRequest,
+    _: Annotated[sqlite3.Row, Depends(get_current_user)],
+) -> CaptionGenerationResponse:
+    provider = os.environ.get("CONTENT_FLOW_AI_PROVIDER", "claude").strip().lower()
+    provider_config = {
+        "openai": ("OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5-mini"),
+        "gemini": ("GEMINI_API_KEY", "GEMINI_MODEL", "gemini-2.5-flash"),
+        "claude": ("ANTHROPIC_API_KEY", "CLAUDE_MODEL", "claude-sonnet-5-5"),
+    }
+    if provider not in provider_config:
+        raise HTTPException(status_code=503, detail="Set CONTENT_FLOW_AI_PROVIDER to claude, openai, or gemini.")
+    key_name, model_name, default_model = provider_config[provider]
+    api_key = os.environ.get(key_name, "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail=f"Configure {key_name} on the backend to generate captions.")
+
+    model = os.environ.get(model_name, default_model).strip()
+    platform_guidance = {
+        "instagram": "Make it visual and engaging, with a concise opening and relevant hashtags.",
+        "facebook": "Make it conversational and contextual, with few hashtags and a natural invitation to respond.",
+        "linkedin": "Make it professional and insight-led, with restrained industry-relevant hashtags.",
+        "youtube": "Write a searchable description with a strong first sentence and a few discovery hashtags.",
+        "tiktok": "Write a concise, energetic hook and a small set of discovery hashtags.",
+    }
+    platform_instructions = "\n".join(
+        f"- {platform}: {platform_guidance[platform]}" for platform in payload.platforms
+    )
+    prompt = (
+        "Create platform-specific social captions. Do not invent dates, prices, results, links, or other facts. "
+        "Return only JSON in this shape: {\"posts\":[{\"platform\":string,\"caption\":string,\"hashtags\":[string]}]}. "
+        "Hashtags must not include the leading #. Include exactly one distinct post for each requested platform.\n"
+        f"Topic: {payload.topic}\nAudience: {payload.audience}\nLanguage: {payload.language}\n"
+        f"Additional instructions: {payload.instructions or 'None'}\nPlatform requirements:\n{platform_instructions}"
+    )
+    try:
+        generated_text = await call_caption_provider(provider, api_key, model, prompt)
+        generated = CaptionDrafts.model_validate_json(generated_text)
+    except httpx.TimeoutException as error:
+        raise HTTPException(status_code=502, detail="The AI provider timed out. Please try again.") from error
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail="The AI provider could not generate captions.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="The AI provider returned invalid caption data.") from error
+    except Exception as error:
+        if error.__class__.__module__.startswith("pydantic"):
+            raise HTTPException(status_code=502, detail="The AI provider returned captions in an invalid format.") from error
+        raise
+
+    generated_platforms = [draft.platform for draft in generated.posts]
+    if set(generated_platforms) != set(payload.platforms) or len(generated_platforms) != len(payload.platforms):
+        raise HTTPException(status_code=502, detail="The AI provider did not return one caption per selected platform.")
+    return CaptionGenerationResponse(provider=provider, posts=generated.posts)
 
 
 @app.get("/api/scheduled-posts", response_model=list[ScheduledPostResponse])
@@ -973,3 +1368,23 @@ def read_submission(
         for asset in asset_rows
     ]
     return submission_from_row(row, assets)
+
+from fastapi import Request
+
+@app.get("/api/social/webhook")
+async def verify_webhook(request: Request):
+    hub_mode = request.query_params.get("hub.mode")
+    hub_challenge = request.query_params.get("hub.challenge")
+    hub_verify_token = request.query_params.get("hub.verify_token")
+    
+    VERIFY_TOKEN = "insta_hook_99"
+    
+    if hub_mode == "subscribe" and hub_verify_token == VERIFY_TOKEN:
+        return Response(content=hub_challenge, media_type="text/plain")
+    
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+@app.post("/api/social/webhook")
+async def receive_webhook(request: Request):
+    body = await request.json()
+    return {"status": "received"}

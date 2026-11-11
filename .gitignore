@@ -1,0 +1,33 @@
+# Content-Flow repository root
+# The application lives in ./ContentFlow (backend + frontend).
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.npm/
+.yarn/*
+.pnpm-store/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local data (SQLite database and uploaded media)
+ContentFlow/backend/data/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

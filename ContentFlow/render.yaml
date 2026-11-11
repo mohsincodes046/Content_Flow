@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: contentflow-api
+    runtime: python
+    rootDir: backend
+    region: oregon
+    plan: 0.5c-512mb
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    disk:
+      name: contentflow-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: CONTENT_FLOW_DATA_DIR
+        value: /var/data
+      - key: CONTENT_FLOW_COOKIE_SECURE
+        value: "true"
+      - key: CONTENT_FLOW_AI_PROVIDER
+        value: claude
+      - key: CONTENT_FLOW_ALLOWED_ORIGINS
+        value: https://contentflow-web.onrender.com
+      - key: CONTENT_FLOW_FRONTEND_URL
+        value: https://contentflow-web.onrender.com
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: CONTENT_FLOW_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: CONTENT_FLOW_PUBLISHER_ENABLED
+        value: "false"
+      - key: CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS
+        value: "60"
+      - key: CONTENT_FLOW_PUBLISH_MAX_ATTEMPTS
+        value: "3"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: contentflow-web
+    runtime: node
+    rootDir: frontend
+    region: oregon
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0
+    envVars:
+      - key: NEXT_PUBLIC_CONTENT_FLOW_API_URL
+        fromService:
+          type: web
+          name: contentflow-api
+          envVarKey: RENDER_EXTERNAL_URL

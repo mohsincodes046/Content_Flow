@@ -1,8 +1,15 @@
+import asyncio
+import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
+import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from urllib.parse import parse_qs, urlparse
 
 from app import main
 
@@ -299,6 +306,358 @@ def test_create_and_list_submission(client: TestClient) -> None:
     assert created.json()["assets"] == []
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == created.json()["id"]
+
+def test_caption_generation_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_dir = tmp_path / "caption-unauthenticated-data"
+    monkeypatch.setattr(main, "DATA_DIR", data_dir)
+    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+
+    with TestClient(main.app) as unauthenticated_client:
+        response = unauthenticated_client.post(
+            "/api/ai/captions",
+            json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
+        )
+
+    assert response.status_code == 401
+
+
+def test_social_provider_list_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_dir = tmp_path / "social-unauthenticated-data"
+    monkeypatch.setattr(main, "DATA_DIR", data_dir)
+    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+
+    with TestClient(main.app) as unauthenticated_client:
+        response = unauthenticated_client.get("/api/social/providers")
+        start = unauthenticated_client.get("/api/social/oauth/meta/start", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert start.status_code == 401
+
+
+def test_meta_oauth_start_requires_app_credentials(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("META_APP_ID", raising=False)
+    monkeypatch.delenv("META_APP_SECRET", raising=False)
+    response = client.get("/api/social/oauth/meta/start")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Configure META_APP_ID and META_APP_SECRET on the backend."
+
+
+def test_meta_oauth_start_requires_https_callback_url(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "http://127.0.0.1:8000")
+
+    insecure = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+    secure = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+
+    assert insecure.status_code == 503
+    assert "requires an HTTPS API callback" in insecure.json()["detail"]
+    assert secure.status_code == 302
+    assert "redirect_uri=https%3A%2F%2Fcontentflow-api.example.com" in secure.headers["location"]
+    scopes = parse_qs(urlparse(secure.headers["location"]).query)["scope"][0].split(",")
+    assert "read_insights" not in scopes
+    assert "pages_read_user_content" not in scopes
+
+
+def test_backend_environment_loads_env_file_without_overriding_process_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "META_APP_ID=file-app-id\nMETA_APP_SECRET=file-app-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("META_APP_ID", "process-app-id")
+    monkeypatch.delenv("META_APP_SECRET", raising=False)
+
+    main.load_backend_environment(env_file)
+
+    assert os.environ["META_APP_ID"] == "process-app-id"
+    assert os.environ["META_APP_SECRET"] == "file-app-secret"
+
+
+def test_meta_provider_status_requires_app_credentials_and_encryption_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.delenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", raising=False)
+
+    without_encryption = client.get("/api/social/providers")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    configured = client.get("/api/social/providers")
+
+    assert without_encryption.status_code == 200
+    assert len(without_encryption.json()) == 1
+    assert without_encryption.json()[0]["provider"] == "meta"
+    assert without_encryption.json()[0]["configured"] is False
+    assert configured.json()[0]["configured"] is True
+    unsupported = client.get("/api/social/oauth/tiktok/start")
+    assert unsupported.status_code == 404
+
+
+def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key.decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+    monkeypatch.setenv("CONTENT_FLOW_FRONTEND_URL", "https://contentflow-web.example.com")
+
+    async def fake_exchange(provider: str, settings: dict[str, str], code: str, redirect_uri: str) -> dict[str, object]:
+        assert provider == "meta"
+        assert code == "meta-auth-code"
+        assert redirect_uri == "https://contentflow-api.example.com/api/social/oauth/meta/callback"
+        return {"access_token": "user-access-token", "expires_at": "2026-10-15T00:00:00+00:00"}
+
+    async def fake_accounts(provider: str, token_data: dict[str, object]) -> list[dict[str, object]]:
+        assert provider == "meta"
+        return [
+            {
+                "platform": "facebook",
+                "account_id": "page-42",
+                "account_name": "ContentFlow Page",
+                "account_type": "page",
+                "tokens": {"access_token": "page-access-token", "refresh_token": None, "expires_at": None},
+            },
+            {
+                "platform": "instagram",
+                "account_id": "instagram-77",
+                "account_name": "contentflow.official",
+                "account_type": "professional",
+                "tokens": {"access_token": "page-access-token", "refresh_token": None, "expires_at": None},
+            },
+        ]
+
+    monkeypatch.setattr(main.social_oauth, "exchange_authorization_code", fake_exchange)
+    monkeypatch.setattr(main.social_oauth, "retrieve_connected_accounts", fake_accounts)
+
+    start = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    callback = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "meta-auth-code"},
+        follow_redirects=False,
+    )
+    providers = client.get("/api/social/providers")
+
+    assert start.status_code == 302
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "https://contentflow-web.example.com/accounts?social=connected"
+    assert providers.status_code == 200
+    meta = next(provider for provider in providers.json() if provider["provider"] == "meta")
+    assert [account["platform"] for account in meta["accounts"]] == ["facebook", "instagram"]
+    assert all("access_token" not in account for account in meta["accounts"])
+
+    with main.connect_database() as connection:
+        stored_tokens = connection.execute(
+            "SELECT encrypted_tokens FROM social_accounts ORDER BY platform"
+        ).fetchall()
+    decoded_tokens = [json.loads(Fernet(encryption_key).decrypt(row["encrypted_tokens"].encode("ascii"))) for row in stored_tokens]
+    assert [tokens["access_token"] for tokens in decoded_tokens] == ["page-access-token", "page-access-token"]
+
+    replay = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "meta-auth-code"},
+        follow_redirects=False,
+    )
+    assert replay.headers["location"].endswith("/accounts?social=invalid_state")
+
+    facebook_id = next(account["id"] for account in meta["accounts"] if account["platform"] == "facebook")
+    instagram_id = next(account["id"] for account in meta["accounts"] if account["platform"] == "instagram")
+    with TestClient(main.app) as another_workspace:
+        another_workspace.post(
+            "/api/auth/register",
+            json={
+                "full_name": "Different User",
+                "workspace_name": "Different Workspace",
+                "email": "different@example.com",
+                "password": "another-safe-password",
+            },
+        )
+        cross_workspace_delete = another_workspace.delete(f"/api/social/accounts/{instagram_id}")
+    assert cross_workspace_delete.status_code == 404
+
+    disconnected = client.delete(f"/api/social/accounts/{facebook_id}")
+    remaining_accounts = client.get("/api/social/providers").json()[0]["accounts"]
+    assert disconnected.status_code == 204
+    assert [account["platform"] for account in remaining_accounts] == ["instagram"]
+
+
+def test_meta_exchange_uses_long_lived_token_for_facebook_page_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = {
+        "token_url": "https://graph.facebook.com/v25.0/oauth/access_token",
+        "client_id_value": "test-meta-app",
+        "client_secret_value": "test-meta-secret",
+    }
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        if params.get("code") == "meta-auth-code":
+            return httpx.Response(200, json={"access_token": "short-user-token", "expires_in": 3600})
+        if params.get("grant_type") == "fb_exchange_token":
+            assert params["fb_exchange_token"] == "short-user-token"
+            return httpx.Response(200, json={"access_token": "long-user-token", "expires_in": 5184000})
+        assert request.url.path.endswith("/me/accounts")
+        assert params["access_token"] == "long-user-token"
+        return httpx.Response(200, json={"data": [{
+            "id": "page-42",
+            "name": "ContentFlow Page",
+            "access_token": "long-page-token",
+            "instagram_business_account": {"id": "instagram-77", "username": "contentflow.official"},
+        }]})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(
+        main.social_oauth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    async def connect_and_discover() -> tuple[dict[str, object], list[dict[str, object]]]:
+        token_data = await main.social_oauth.exchange_authorization_code(
+            "meta", settings, "meta-auth-code", "https://contentflow.example.com/callback",
+        )
+        discovered = await main.social_oauth.retrieve_connected_accounts("meta", token_data)
+        return token_data, discovered
+
+    token_data, discovered_accounts = asyncio.run(connect_and_discover())
+
+    assert token_data["access_token"] == "long-user-token"
+    assert len(discovered_accounts) == 2
+    assert [account["platform"] for account in discovered_accounts] == ["facebook", "instagram"]
+    assert all(account["tokens"]["access_token"] == "long-page-token" for account in discovered_accounts)
+    assert all(account["tokens"]["expires_at"] is None for account in discovered_accounts)
+
+
+def test_caption_generation_requires_provider_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = client.post(
+        "/api/ai/captions",
+        json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Configure OPENAI_API_KEY on the backend to generate captions."
+
+
+def test_caption_generation_returns_one_draft_per_platform(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+        assert provider == "openai"
+        assert api_key == "test-key"
+        assert model == "gpt-5-mini"
+        assert "distinct post for each requested platform" in prompt
+        return (
+            '{"posts":['
+            '{"platform":"instagram","caption":"A visual launch.","hashtags":["CourseLaunch"]},'
+            '{"platform":"linkedin","caption":"A professional launch.","hashtags":["Education"]}'
+            ']}'
+        )
+
+    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    response = client.post(
+        "/api/ai/captions",
+        json={
+            "topic": "A new course",
+            "audience": "Students",
+            "instructions": "Do not invent dates.",
+            "platforms": ["instagram", "linkedin"],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openai"
+    assert [post["platform"] for post in response.json()["posts"]] == ["instagram", "linkedin"]
+    assert response.json()["posts"][0]["caption"] != response.json()["posts"][1]["caption"]
+
+
+def test_claude_caption_generation_uses_configured_model_and_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+        assert provider == "claude"
+        assert api_key == "test-anthropic-key"
+        assert model == "claude-sonnet-5-5"
+        assert "instagram" in prompt
+        return '{"posts":[{"platform":"instagram","caption":"A fresh start.","hashtags":["NewCourse"]}]}'
+
+    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    response = client.post(
+        "/api/ai/captions",
+        json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "claude"
+    assert response.json()["posts"][0]["caption"] == "A fresh start."
+
+
+def test_claude_provider_sends_anthropic_messages_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.anthropic.com/v1/messages"
+        assert request.headers["x-api-key"] == "test-anthropic-key"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        body = json.loads(request.content)
+        assert body["model"] == "claude-sonnet-5-5"
+        assert body["system"] == "Write platform-specific captions."
+        assert body["max_tokens"] > 0
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": '{"posts":[]}'}]},
+        )
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    response_text = asyncio.run(
+        main.call_caption_provider(
+            "claude",
+            "test-anthropic-key",
+            "claude-sonnet-5-5",
+            "Write platform-specific captions.",
+        )
+    )
+
+    assert response_text == '{"posts":[]}'
 
 
 def test_create_and_list_scheduled_posts(client: TestClient) -> None:
