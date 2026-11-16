@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,7 +10,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 
-from app import config, database, migrations_runner, publisher, security, social_oauth, workspaces
+from app import config, database, meta_graph, migrations_runner, publisher, security, workspaces
 
 
 @pytest.fixture()
@@ -71,31 +70,33 @@ def test_concurrent_publishers_never_publish_a_post_twice(db: str, monkeypatch: 
              now, now),
         )
         for index in range(10):
-            (config.UPLOAD_DIR / f"a{index}.upload").write_bytes(b"img")
             connection.execute(
-                "INSERT INTO assets (id, filename, media_type, size, storage_name, created_at, user_id, workspace_id) "
-                "VALUES (?, ?, 'image/jpeg', 3, ?, ?, 'u1', ?)",
-                (f"a{index}", f"a{index}.jpg", f"a{index}.upload", now, workspace_id),
+                "INSERT INTO posts (id, workspace_id, created_by_user_id, title, caption, status, scheduled_at, "
+                "planned_platforms_json, created_at, updated_at) "
+                "VALUES (?, ?, 'u1', ?, 'c', 'scheduled', '2020-01-01T00:00:00+00:00', '[]', ?, ?)",
+                (f"p{index}", workspace_id, f"post {index}", now, now),
             )
             connection.execute(
-                "INSERT INTO scheduled_posts (id, media_name, scheduled_date, scheduled_time, platforms_json, caption, "
-                "created_at, user_id, asset_id, facebook_account_id, timezone_offset_minutes, workspace_id) "
-                "VALUES (?, ?, '2020-01-01', '00:00', ?, 'c', ?, 'u1', ?, 'page', 0, ?)",
-                (f"p{index}", f"a{index}.jpg", json.dumps(["facebook"]), now, f"a{index}", workspace_id),
+                "INSERT INTO post_targets (id, post_id, social_account_id, platform, account_name, status) "
+                "VALUES (?, ?, 'page', 'facebook', 'Page', 'queued')",
+                (f"t{index}", f"p{index}"),
             )
 
     published: list[str] = []
     lock = threading.Lock()
 
-    async def fake_publish(page_id, token, media_path, filename, media_type, caption):  # type: ignore[no-untyped-def]
+    async def fake_publish(page_id, token, message, media, link=None):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(0.01)  # give the other publishers a chance to collide
         with lock:
-            published.append(filename)
-        return f"meta-{filename}"
+            published.append(page_id)
+        return meta_graph.PublishResult(f"post-{len(published)}")
 
-    monkeypatch.setattr(social_oauth, "publish_facebook_photo", fake_publish)
-    _run_in_threads(4, lambda: asyncio.run(publisher.publish_due_scheduled_posts(datetime.now(timezone.utc))))
+    monkeypatch.setattr(meta_graph, "publish_facebook", fake_publish)
+    _run_in_threads(4, lambda: asyncio.run(publisher.publish_due(datetime.now(timezone.utc))))
 
-    assert sorted(published) == sorted(f"a{index}.jpg" for index in range(10))
+    assert len(published) == 10
     with database.connect_database() as connection:
-        statuses = connection.execute("SELECT publish_status, COUNT(*) AS n FROM scheduled_posts GROUP BY publish_status").fetchall()
-    assert [dict(row) for row in statuses] == [{"publish_status": "published", "n": 10}]
+        statuses = connection.execute("SELECT status, COUNT(*) AS n FROM posts GROUP BY status").fetchall()
+        attempts = connection.execute("SELECT COUNT(*) AS n FROM publish_attempts").fetchone()["n"]
+    assert [dict(row) for row in statuses] == [{"status": "published", "n": 10}]
+    assert attempts == 10

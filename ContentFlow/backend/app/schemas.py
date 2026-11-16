@@ -3,6 +3,7 @@ from __future__ import annotations
 # `date` and `time` look unused because fields share their names, but Pydantic
 # resolves the string annotations (e.g. `date: date`) from this module's globals.
 from datetime import date, time  # noqa: F401
+from datetime import datetime as datetime_type
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -201,6 +202,145 @@ class AssetResponse(BaseModel):
     filename: str
     media_type: str
     size: int
+    width: Optional[int] = None
+    height: Optional[int] = None
+    created_at: Optional[str] = None
+    used_by_posts: int = 0
+
+
+PostStatus = Literal[
+    "draft", "in_review", "changes_requested", "approved", "rejected",
+    "scheduled", "publishing", "published", "partially_published", "failed",
+]
+TargetStatus = Literal["pending", "queued", "publishing", "published", "failed", "cancelled"]
+
+
+class PostTargetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    social_account_id: str
+    caption_override: Optional[str] = Field(default=None, max_length=63206)
+
+
+class PostSchedule(BaseModel):
+    """A wall-clock time in an IANA timezone, e.g. 2026-12-01 09:30 in Asia/Karachi."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    local_datetime: datetime_type = Field(description="Local date and time, without an offset")
+    timezone: str = Field(min_length=1, max_length=64)
+
+
+class PostWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(default="", max_length=200)
+    caption: str = Field(default="", max_length=63206)
+    asset_ids: list[str] = Field(default_factory=list, max_length=20)
+    targets: list[PostTargetInput] = Field(default_factory=list, max_length=50)
+    planned_platforms: list[Platform] = Field(default_factory=list, max_length=5)
+    schedule: Optional[PostSchedule] = None
+
+    @field_validator("asset_ids")
+    @classmethod
+    def unique_assets(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Each media item can only be added once.")
+        return value
+
+    @field_validator("targets")
+    @classmethod
+    def unique_targets(cls, value: list[PostTargetInput]) -> list[PostTargetInput]:
+        ids = [target.social_account_id for target in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Each account can only be selected once.")
+        return value
+
+
+class PostCreate(PostWrite):
+    action: Literal["draft", "schedule", "submit"] = "draft"
+    reviewer_user_id: Optional[str] = None
+
+
+class PostBulkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    posts: list[PostCreate] = Field(min_length=1, max_length=366)
+
+
+class PostSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer_user_id: str
+    message: str = Field(default="", max_length=2000)
+
+
+class PostReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject", "request_changes"]
+    comment: str = Field(default="", max_length=2000)
+
+
+class PostComment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class PostScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schedule: PostSchedule
+
+
+class PostTargetResponse(BaseModel):
+    id: str
+    social_account_id: Optional[str]
+    platform: str
+    account_name: str
+    caption_override: Optional[str] = None
+    status: TargetStatus
+    attempts: int
+    next_attempt_at: Optional[str] = None
+    last_error: Optional[str] = None
+    external_id: Optional[str] = None
+    external_url: Optional[str] = None
+    published_at: Optional[str] = None
+    account_status: Optional[str] = None
+
+
+class PostEventResponse(BaseModel):
+    id: str
+    kind: str
+    message: Optional[str] = None
+    actor_name: Optional[str] = None
+    created_at: str
+
+
+class ValidationIssue(BaseModel):
+    platform: str
+    account: Optional[str] = None
+    message: str
+
+
+class PostResponse(BaseModel):
+    id: str
+    title: str
+    caption: str
+    status: PostStatus
+    scheduled_at: Optional[str] = None
+    timezone: Optional[str] = None
+    planned_platforms: list[str] = Field(default_factory=list)
+    reviewer_user_id: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_at: str
+    updated_at: str
+    media: list[AssetResponse] = Field(default_factory=list)
+    targets: list[PostTargetResponse] = Field(default_factory=list)
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    events: list[PostEventResponse] = Field(default_factory=list)
 
 
 class SubmissionResponse(BaseModel):

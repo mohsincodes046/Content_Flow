@@ -57,3 +57,48 @@ export function isSessionUser(value: unknown): value is SessionUser {
   return typeof v.id === "string" && typeof v.email === "string" && typeof v.full_name === "string"
     && Array.isArray(v.workspaces);
 }
+
+// --- Posts -------------------------------------------------------------------------------------
+
+export type PostStatus =
+  | "draft" | "in_review" | "changes_requested" | "approved" | "rejected"
+  | "scheduled" | "publishing" | "published" | "partially_published" | "failed";
+export type Asset = {
+  id: string; filename: string; media_type: string; size: number;
+  width?: number | null; height?: number | null; created_at?: string | null; used_by_posts?: number;
+};
+export type PostTarget = {
+  id: string; social_account_id: string | null; platform: string; account_name: string; caption_override: string | null;
+  status: "pending" | "queued" | "publishing" | "published" | "failed" | "cancelled";
+  attempts: number; next_attempt_at?: string | null; last_error?: string | null;
+  external_id?: string | null; external_url?: string | null; published_at?: string | null; account_status?: string | null;
+};
+export type PostEvent = { id: string; kind: string; message?: string | null; actor_name?: string | null; created_at: string };
+export type Post = {
+  id: string; title: string; caption: string; status: PostStatus;
+  scheduled_at: string | null; timezone: string | null; planned_platforms: string[];
+  reviewer_user_id: string | null; reviewer_name: string | null; created_by_name: string | null;
+  created_at: string; updated_at: string; media: Asset[]; targets: PostTarget[];
+  issues: { platform: string; account?: string | null; message: string }[]; events: PostEvent[];
+};
+
+export const statusLabels: Record<PostStatus, string> = {
+  draft: "Draft", in_review: "In review", changes_requested: "Changes requested", approved: "Approved",
+  rejected: "Rejected", scheduled: "Scheduled", publishing: "Publishing…", published: "Published",
+  partially_published: "Partly published", failed: "Failed",
+};
+
+export const browserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+export const assetUrl = (id: string) => `${apiUrl}/api/assets/${encodeURIComponent(id)}/content`;
+
+/** "2026-12-01T09:30" in the browser's timezone, for <input type="datetime-local">. */
+export function toLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+export const formatWhen = (iso: string | null) => iso
+  ? new Date(iso).toLocaleString("en", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+  : "Not scheduled";

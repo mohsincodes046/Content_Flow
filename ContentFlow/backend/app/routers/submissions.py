@@ -21,7 +21,7 @@ def get_assets(asset_ids: list[str], workspace_id: str) -> list[AssetResponse]:
     with connect_database() as connection:
         rows = connection.execute(
             f"""
-            SELECT id, filename, media_type, size, submission_id
+            SELECT id, filename, media_type, size, width, height, created_at, submission_id
             FROM assets
             WHERE id IN ({placeholders}) AND workspace_id = ?
             """,
@@ -48,6 +48,9 @@ def get_assets(asset_ids: list[str], workspace_id: str) -> list[AssetResponse]:
             filename=row["filename"],
             media_type=row["media_type"],
             size=row["size"],
+            width=row["width"],
+            height=row["height"],
+            created_at=row["created_at"],
         )
         for row in attached_assets
     ]
@@ -145,7 +148,7 @@ def list_submissions(
         for row in rows:
             asset_rows = connection.execute(
                 """
-                SELECT id, filename, media_type, size
+                SELECT id, filename, media_type, size, width, height, created_at
                 FROM assets
                 WHERE submission_id = ?
                 ORDER BY created_at, id
@@ -158,6 +161,9 @@ def list_submissions(
                     filename=asset["filename"],
                     media_type=asset["media_type"],
                     size=asset["size"],
+                    width=asset["width"],
+                    height=asset["height"],
+                    created_at=asset["created_at"],
                 )
                 for asset in asset_rows
             ]
@@ -184,7 +190,7 @@ def read_submission(
 
         asset_rows = connection.execute(
             """
-            SELECT id, filename, media_type, size
+            SELECT id, filename, media_type, size, width, height, created_at
             FROM assets
             WHERE submission_id = ?
             ORDER BY created_at, id
@@ -198,6 +204,9 @@ def read_submission(
             filename=asset["filename"],
             media_type=asset["media_type"],
             size=asset["size"],
+            width=asset["width"],
+            height=asset["height"],
+            created_at=asset["created_at"],
         )
         for asset in asset_rows
     ]

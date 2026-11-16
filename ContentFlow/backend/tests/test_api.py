@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -11,7 +10,9 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from urllib.parse import parse_qs, urlparse
 
-from app import ai as ai_service, config, database, main, meta_graph, publisher, security, social_oauth
+from media_samples import jpeg, png
+
+from app import ai as ai_service, config, database, main, meta_graph, security, social_oauth
 
 
 @pytest.fixture()
@@ -42,10 +43,10 @@ def test_protected_content_api_requires_login(tmp_path: Path, monkeypatch: pytes
 
     with TestClient(main.app) as unauthenticated_client:
         response = unauthenticated_client.get("/api/submissions")
-        scheduled_posts = unauthenticated_client.get("/api/scheduled-posts")
+        posts = unauthenticated_client.get("/api/posts")
 
     assert response.status_code == 401
-    assert scheduled_posts.status_code == 401
+    assert posts.status_code == 401
 
 
 def test_registration_creates_workspace_and_http_only_session(
@@ -252,7 +253,7 @@ def test_user_cannot_read_another_users_submissions(client: TestClient) -> None:
 def test_user_cannot_attach_another_users_asset(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("private.png", b"private image", "image/png")},
+        files={"file": ("private.png", png(), "image/png")},
     )
     client.post("/api/auth/logout")
     client.post(
@@ -570,75 +571,6 @@ def test_meta_exchange_and_discovery_follow_pagination_and_page_permissions(
     assert instagram["tokens"]["access_token"] == "page-42-token"
 
 
-def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    image_path = tmp_path / "post.jpg"
-    image_path.write_bytes(b"test image bytes")
-    real_async_client = httpx.AsyncClient
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        assert request.method == "POST"
-        assert request.url.path == "/v26.0/page-42/photos"
-        body = request.read()
-        assert b"name=\"caption\"" in body
-        assert b"A Facebook caption" in body
-        assert b"page-token" in body
-        assert b"filename=\"post.jpg\"" in body
-        assert b"test image bytes" in body
-        return httpx.Response(200, json={"id": "facebook-photo-99"})
-
-    transport = httpx.MockTransport(handle_request)
-    monkeypatch.setattr(
-        social_oauth.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_async_client(transport=transport, **kwargs),
-    )
-    post_id = asyncio.run(social_oauth.publish_facebook_photo(
-        "page-42",
-        "page-token",
-        image_path,
-        "post.jpg",
-        "image/jpeg",
-        "A Facebook caption",
-    ))
-
-    assert post_id == "facebook-photo-99"
-
-
-@pytest.mark.parametrize(
-    ("graph_error", "expected_fragment"),
-    [
-        ({"message": "Invalid parameter", "code": 100}, "Facebook rejected the post: Invalid parameter (code 100)"),
-        ({"message": "Session has expired", "code": 190}, "Reconnect the Page"),
-    ],
-)
-def test_facebook_photo_publisher_reports_meta_error_messages(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    graph_error: dict[str, object],
-    expected_fragment: str,
-) -> None:
-    image_path = tmp_path / "post.jpg"
-    image_path.write_bytes(b"test image bytes")
-    real_async_client = httpx.AsyncClient
-    transport = httpx.MockTransport(lambda request: httpx.Response(400, json={"error": graph_error}))
-    monkeypatch.setattr(
-        social_oauth.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_async_client(transport=transport, **kwargs),
-    )
-
-    with pytest.raises(social_oauth.MetaAPIError) as raised:
-        asyncio.run(social_oauth.publish_facebook_photo(
-            "page-42", "secret-page-token", image_path, "post.jpg", "image/jpeg", "Caption",
-        ))
-
-    assert expected_fragment in str(raised.value)
-    assert "secret-page-token" not in str(raised.value)
-
-
 def test_caption_generation_requires_provider_key(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -753,362 +685,6 @@ def test_claude_provider_sends_anthropic_messages_request(
     assert response_text == '{"posts":[]}'
 
 
-def test_create_and_list_scheduled_posts(client: TestClient) -> None:
-    payload = {
-        "posts": [
-            {
-                "media_name": "Campaign image.png",
-                "date": "2026-11-03",
-                "time": "10:30",
-                "platforms": ["instagram", "linkedin"],
-                "caption": "A launch is coming soon.",
-            },
-            {
-                "media_name": "Behind the scenes.mp4",
-                "date": "2026-11-04",
-                "time": "11:00",
-                "platforms": ["facebook"],
-                "caption": "A little look behind the scenes.",
-            },
-        ]
-    }
-
-    created = client.post("/api/scheduled-posts", json=payload)
-    listed = client.get("/api/scheduled-posts")
-
-    assert created.status_code == 201
-    assert len(created.json()) == 2
-    assert created.json()[0]["media_name"] == payload["posts"][0]["media_name"]
-    assert created.json()[0]["date"] == payload["posts"][0]["date"]
-    assert created.json()[0]["time"] == payload["posts"][0]["time"]
-    assert created.json()[0]["platforms"] == payload["posts"][0]["platforms"]
-    assert listed.status_code == 200
-    assert [post["id"] for post in listed.json()] == [
-        post["id"] for post in created.json()
-    ]
-
-
-def test_scheduled_facebook_image_posts_to_the_selected_page(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    encryption_key = Fernet.generate_key().decode("ascii")
-    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
-    page_record_id = "connected-facebook-page"
-    with database.connect_database() as connection:
-        user = connection.execute(
-            "SELECT users.id, memberships.workspace_id FROM users JOIN memberships ON memberships.user_id = users.id "
-            "WHERE users.email = ?",
-            ("test@example.com",),
-        ).fetchone()
-        assert user is not None
-        connection.execute(
-            """
-            INSERT INTO social_accounts (
-                id, user_id, provider, platform, account_id, account_name, account_type,
-                encrypted_tokens, expires_at, connected_at, updated_at, workspace_id
-            ) VALUES (?, ?, 'meta', 'facebook', 'meta-page-42', 'Rahat Pizza Islamabad', 'page', ?, NULL, ?, ?, ?)
-            """,
-            (
-                page_record_id,
-                user["id"],
-                Fernet(encryption_key).encrypt(json.dumps({"access_token": "page-token"}).encode()).decode("ascii"),
-                datetime.now(timezone.utc).isoformat(),
-                datetime.now(timezone.utc).isoformat(),
-                user["workspace_id"],
-            ),
-        )
-
-    uploaded = client.post(
-        "/api/assets",
-        files={"file": ("poster.jpg", b"image bytes", "image/jpeg")},
-    )
-    assert uploaded.status_code == 201
-    scheduled_for = datetime.now(timezone.utc) + timedelta(days=1)
-    scheduled_for = scheduled_for.replace(hour=10, minute=0, second=0, microsecond=0)
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [{
-                "media_name": "poster.jpg",
-                "date": scheduled_for.date().isoformat(),
-                "time": "10:00",
-                "platforms": ["facebook"],
-                "caption": "A new menu is here.",
-                "asset_id": uploaded.json()["id"],
-                "facebook_account_id": page_record_id,
-                "timezone_offset_minutes": 0,
-            }],
-        },
-    )
-    assert created.status_code == 201
-    scheduled_post = created.json()[0]
-    assert scheduled_post["publish_status"] == "scheduled"
-    assert scheduled_post["facebook_account_id"] == page_record_id
-
-    with database.connect_database() as connection:
-        connection.execute(
-            "UPDATE scheduled_posts SET scheduled_date = '2020-01-01', scheduled_time = '00:00' WHERE id = ?",
-            (scheduled_post["id"],),
-        )
-
-    published: list[tuple[str, str, bytes, str]] = []
-
-    async def fake_publish(
-        page_id: str,
-        access_token: str,
-        media_path: Path,
-        filename: str,
-        media_type: str,
-        caption: str,
-    ) -> str:
-        assert access_token == "page-token"
-        assert filename == "poster.jpg"
-        assert media_type == "image/jpeg"
-        published.append((page_id, caption, media_path.read_bytes(), filename))
-        return "meta-post-123"
-
-    monkeypatch.setattr(social_oauth, "publish_facebook_photo", fake_publish)
-    asyncio.run(publisher.publish_due_scheduled_posts())
-
-    refreshed = client.get("/api/scheduled-posts")
-    assert refreshed.status_code == 200
-    assert refreshed.json()[0]["publish_status"] == "published"
-    assert published == [("meta-page-42", "A new menu is here.", b"image bytes", "poster.jpg")]
-
-
-def test_facebook_post_cannot_be_rescheduled_into_the_past(
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    encryption_key = Fernet.generate_key().decode("ascii")
-    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
-    with database.connect_database() as connection:
-        user = connection.execute(
-            "SELECT users.id, memberships.workspace_id FROM users JOIN memberships ON memberships.user_id = users.id "
-            "WHERE users.email = ?",
-            ("test@example.com",),
-        ).fetchone()
-        now = datetime.now(timezone.utc).isoformat()
-        connection.execute(
-            """
-            INSERT INTO social_accounts (
-                id, user_id, provider, platform, account_id, account_name, account_type,
-                encrypted_tokens, expires_at, connected_at, updated_at, workspace_id
-            ) VALUES ('page-record', ?, 'meta', 'facebook', 'meta-page-1', 'Test Page', 'page', ?, NULL, ?, ?, ?)
-            """,
-            (user["id"], Fernet(encryption_key).encrypt(b'{"access_token": "t"}').decode("ascii"), now, now,
-             user["workspace_id"]),
-        )
-    uploaded = client.post("/api/assets", files={"file": ("poster.jpg", b"image bytes", "image/jpeg")})
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date()
-    created = client.post(
-        "/api/scheduled-posts",
-        json={"posts": [{
-            "media_name": "poster.jpg",
-            "date": tomorrow.isoformat(),
-            "time": "23:00",
-            "platforms": ["facebook"],
-            "caption": "Caption",
-            "asset_id": uploaded.json()["id"],
-            "facebook_account_id": "page-record",
-            "timezone_offset_minutes": 0,
-        }]},
-    )
-    assert created.status_code == 201
-    post_id = created.json()[0]["id"]
-
-    past = client.patch(f"/api/scheduled-posts/{post_id}", json={"date": "2020-01-01"})
-    future = client.patch(
-        f"/api/scheduled-posts/{post_id}",
-        json={"date": (tomorrow + timedelta(days=1)).isoformat()},
-    )
-
-    assert past.status_code == 422
-    assert past.json()["detail"] == "Choose a future date for automatic Facebook publishing."
-    assert future.status_code == 200
-
-
-def test_scheduled_posts_reject_channel_time_conflicts_atomically(client: TestClient) -> None:
-    first = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "First post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "First.",
-                }
-            ]
-        },
-    )
-    conflict = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Would be rolled back.png",
-                    "date": "2026-11-04",
-                    "time": "09:00",
-                    "platforms": ["facebook"],
-                    "caption": "This must not partially save.",
-                },
-                {
-                    "media_name": "Conflicting post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram", "linkedin"],
-                    "caption": "This conflicts with the first post.",
-                },
-            ]
-        },
-    )
-
-    assert first.status_code == 201
-    assert conflict.status_code == 409
-    assert len(client.get("/api/scheduled-posts").json()) == 1
-
-
-def test_scheduled_post_date_update_and_delete(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Campaign image.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "A launch is coming soon.",
-                }
-            ]
-        },
-    )
-    post_id = created.json()[0]["id"]
-    rescheduled = client.patch(
-        f"/api/scheduled-posts/{post_id}",
-        json={"date": "2026-11-05"},
-    )
-    deleted = client.delete(f"/api/scheduled-posts/{post_id}")
-
-    assert rescheduled.status_code == 200
-    assert rescheduled.json()["date"] == "2026-11-05"
-    assert deleted.status_code == 204
-    assert client.get("/api/scheduled-posts").json() == []
-
-
-def test_reschedule_rejects_a_channel_time_collision(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "First post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "First.",
-                },
-                {
-                    "media_name": "Second post.png",
-                    "date": "2026-11-04",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "Second.",
-                },
-            ]
-        },
-    )
-    first_id = created.json()[0]["id"]
-    conflict = client.patch(
-        f"/api/scheduled-posts/{first_id}",
-        json={"date": "2026-11-04"},
-    )
-
-    assert created.status_code == 201
-    assert conflict.status_code == 409
-    assert client.get("/api/scheduled-posts").json()[0]["date"] == "2026-11-03"
-
-
-def test_scheduled_posts_are_private_to_each_user(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Private plan.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "Private schedule.",
-                }
-            ]
-        },
-    )
-    post_id = created.json()[0]["id"]
-    client.post("/api/auth/logout")
-    client.post(
-        "/api/auth/register",
-        json={
-            "full_name": "Other User",
-            "workspace_name": "Other Workspace",
-            "email": "other@example.com",
-            "password": "another-strong-password",
-        },
-    )
-
-    assert client.get("/api/scheduled-posts").json() == []
-    assert client.patch(f"/api/scheduled-posts/{post_id}", json={"date": "2026-11-06"}).status_code == 404
-    assert client.delete(f"/api/scheduled-posts/{post_id}").status_code == 404
-
-
-def test_scheduled_posts_validate_payload_and_idempotent_retry(client: TestClient) -> None:
-    payload = {
-        "posts": [
-            {
-                "media_name": "Campaign image.png",
-                "date": "2026-11-03",
-                "time": "10:30",
-                "platforms": ["instagram"],
-                "caption": "A launch is coming soon.",
-            }
-        ]
-    }
-    created = client.post("/api/scheduled-posts", json=payload)
-    retry = client.post("/api/scheduled-posts", json=payload)
-    invalid = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    **payload["posts"][0],
-                    "platforms": ["not-a-platform"],
-                }
-            ]
-        },
-    )
-    invalid_precision = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    **payload["posts"][0],
-                    "time": "10:30:01",
-                }
-            ]
-        },
-    )
-
-    assert created.status_code == 201
-    assert retry.status_code == 201
-    assert retry.json()[0]["id"] == created.json()[0]["id"]
-    assert invalid.status_code == 422
-    assert invalid_precision.status_code == 422
-    assert len(client.get("/api/scheduled-posts").json()) == 1
-
-
 def test_reject_invalid_platform_and_duplicate_platforms(client: TestClient) -> None:
     payload = {
         "campaign": "",
@@ -1145,7 +721,7 @@ def test_required_submission_text_cannot_be_blank(client: TestClient) -> None:
 def test_upload_asset_and_attach_it_to_submission(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("poster.png", b"image bytes", "image/png")},
+        files={"file": ("poster.png", jpeg(), "image/png")},
     )
     assert uploaded.status_code == 201
     asset = uploaded.json()
@@ -1175,7 +751,7 @@ def test_upload_asset_and_attach_it_to_submission(client: TestClient) -> None:
 def test_asset_cannot_be_attached_to_multiple_submissions(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("poster.png", b"image bytes", "image/png")},
+        files={"file": ("poster.png", jpeg(), "image/png")},
     )
     asset_id = uploaded.json()["id"]
     payload = {

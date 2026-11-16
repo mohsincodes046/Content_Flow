@@ -274,8 +274,8 @@ async def publish_instagram(ig_id: str, token: str, caption: str, media: list[tu
     """`media` is a list of (media_type, public_url). Images must be JPEG (Meta requirement)."""
     if not media:
         raise GraphError("Instagram posts need at least one photo or video.")
-    if len(media) > 10:
-        raise GraphError("Instagram carousels can have at most 10 items.")
+    if len(media) > 20:
+        raise GraphError("Instagram carousels can have at most 20 items.")
     quota = await publishing_quota(ig_id, token)
     if quota:
         total = (quota.get("config") or {}).get("quota_total")

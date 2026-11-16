@@ -1,7 +1,6 @@
 """Workspace isolation, roles and membership lifecycle (docs/workspace-tenancy.md)."""
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +11,8 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+
+from media_samples import jpeg
 
 from app import ai as ai_service, config, database, main, security
 
@@ -83,9 +84,10 @@ def connect_page(client: TestClient, page_id: str = "page-1") -> str:
 
 
 def future_post(**extra: object) -> dict:
-    when = (datetime.now(timezone.utc) + timedelta(days=2)).date().isoformat()
-    return {"posts": [{"media_name": "a.jpg", "date": when, "time": "10:00", "platforms": ["instagram"],
-                       "caption": "Hello", **extra}]}
+    """A draft planned for two days from now (no accounts needed)."""
+    when = (datetime.now(timezone.utc) + timedelta(days=2)).replace(hour=10, minute=0, tzinfo=None)
+    return {"title": "Post", "caption": "Hello", "planned_platforms": ["instagram"],
+            "schedule": {"local_datetime": when.isoformat(), "timezone": "UTC"}, **extra}
 
 
 # --- Registration and invitations --------------------------------------------------------------
@@ -152,19 +154,23 @@ def test_another_workspace_cannot_see_or_touch_any_resource(make_client: Callabl
     a = make_client("a@example.com", "A")
     b = make_client("b@example.com", "B")
 
-    asset = a.post("/api/assets", files={"file": ("x.jpg", b"img", "image/jpeg")}).json()
+    asset = a.post("/api/assets", files={"file": ("x.jpg", jpeg(), "image/jpeg")}).json()
     submission = a.post("/api/submissions", json={
         "campaign": "", "audience": "All", "instructions": "Do it", "language": "English",
         "platforms": ["instagram"], "asset_ids": [],
     }).json()
-    post = a.post("/api/scheduled-posts", json=future_post()).json()[0]
+    post = a.post("/api/posts", json=future_post()).json()
     page = connect_page(a)
 
     assert b.get("/api/submissions").json() == []
     assert b.get(f"/api/submissions/{submission['id']}").status_code == 404
-    assert b.get("/api/scheduled-posts").json() == []
-    assert b.patch(f"/api/scheduled-posts/{post['id']}", json={"date": "2030-01-01"}).status_code == 404
-    assert b.delete(f"/api/scheduled-posts/{post['id']}").status_code == 404
+    assert b.get("/api/posts").json() == []
+    assert b.get(f"/api/posts/{post['id']}").status_code == 404
+    assert b.patch(f"/api/posts/{post['id']}", json={"caption": "hijack"}).status_code == 404
+    assert b.delete(f"/api/posts/{post['id']}").status_code == 404
+    assert b.post(f"/api/posts/{post['id']}/review", json={"decision": "approve"}).status_code == 404
+    assert b.get(f"/api/assets/{asset['id']}/content").status_code == 404
+    assert b.delete(f"/api/assets/{asset['id']}").status_code == 404
     assert b.delete(f"/api/social/accounts/{page}").status_code == 404
     meta = next(p for p in b.get("/api/social/providers").json() if p["provider"] == "meta")
     assert meta["accounts"] == []
@@ -173,11 +179,11 @@ def test_another_workspace_cannot_see_or_touch_any_resource(make_client: Callabl
         "campaign": "", "audience": "All", "instructions": "Do it", "language": "English",
         "platforms": ["instagram"], "asset_ids": [asset["id"]],
     }).status_code == 400
-    assert b.post("/api/scheduled-posts", json=future_post(
-        platforms=["facebook"], asset_id=asset["id"], facebook_account_id=page)).status_code == 400
+    assert b.post("/api/posts", json=future_post(asset_ids=[asset["id"]])).status_code == 400
+    assert b.post("/api/posts", json=future_post(targets=[{"social_account_id": page}])).status_code == 400
 
     # And A still has everything.
-    assert len(a.get("/api/scheduled-posts").json()) == 1
+    assert len(a.get("/api/posts").json()) == 1
     assert a.get(f"/api/submissions/{submission['id']}").status_code == 200
 
 
@@ -190,13 +196,13 @@ def test_switching_to_a_workspace_you_do_not_belong_to_is_not_found(make_client:
 
 def test_workspace_switching_changes_what_you_see(make_client: Callable[..., TestClient]) -> None:
     person = make_client("person@example.com", "First")
-    person.post("/api/scheduled-posts", json=future_post())
+    person.post("/api/posts", json=future_post())
     first_id = me(person)["workspace_id"]
     created = person.post("/api/workspaces", json={"name": "Second"})
     assert created.status_code == 201 and created.json()["workspace_name"] == "Second"
-    assert person.get("/api/scheduled-posts").json() == []
+    assert person.get("/api/posts").json() == []
     person.post(f"/api/workspaces/{first_id}/switch")
-    assert len(person.get("/api/scheduled-posts").json()) == 1
+    assert len(person.get("/api/posts").json()) == 1
 
 
 def test_every_private_route_requires_a_signed_in_user() -> None:
@@ -208,6 +214,8 @@ def test_every_private_route_requires_a_signed_in_user() -> None:
         # Meta calls these directly; they are authenticated by Meta's signed_request instead.
         ("POST", "/api/social/meta/deauthorize"), ("POST", "/api/social/meta/data-deletion"),
         ("GET", "/api/social/meta/data-deletion/{code}"),
+        # Meta downloads media through signed, expiring links.
+        ("GET", "/api/media/{storage_name}"),
     }
 
     def depends_on_user(dependant) -> bool:  # type: ignore[no-untyped-def]
@@ -237,16 +245,16 @@ def test_role_permissions(make_client: Callable[..., TestClient], monkeypatch: p
 
     for hour, role in enumerate(("owner", "admin", "editor"), start=9):
         c = people[role]
-        assert c.post("/api/scheduled-posts", json=future_post(media_name=f"{role}.jpg", time=f"{hour:02d}:00")).status_code == 201, role
-        assert c.post("/api/assets", files={"file": ("x.jpg", b"img", "image/jpeg")}).status_code == 201, role
+        assert c.post("/api/posts", json=future_post(title=role)).status_code == 201, role
+        assert c.post("/api/assets", files={"file": ("x.jpg", jpeg(), "image/jpeg")}).status_code == 201, role
         assert c.post("/api/ai/captions", json=caption).status_code == 200, role
         assert c.get("/api/workspaces/current/members").status_code == 200, role
 
     client = people["client"]
     for method, path, kwargs in [
-        ("get", "/api/scheduled-posts", {}),
-        ("post", "/api/scheduled-posts", {"json": future_post()}),
-        ("post", "/api/assets", {"files": {"file": ("x.jpg", b"img", "image/jpeg")}}),
+        ("post", "/api/posts", {"json": future_post()}),
+        ("get", "/api/assets", {}),
+        ("post", "/api/assets", {"files": {"file": ("x.jpg", jpeg(), "image/jpeg")}}),
         ("post", "/api/ai/captions", {"json": caption}),
         ("get", "/api/submissions", {}),
         ("get", "/api/social/providers", {}),
@@ -289,13 +297,13 @@ def test_the_owner_cannot_be_demoted_removed_or_duplicated(make_client: Callable
 def test_removed_member_loses_access_immediately(make_client: Callable[..., TestClient]) -> None:
     people = team(make_client)
     editor = people["editor"]
-    assert editor.get("/api/scheduled-posts").status_code == 200
+    assert editor.get("/api/posts").status_code == 200
 
     editor_id = me(editor)["id"]
     assert people["admin"].delete(f"/api/workspaces/current/members/{editor_id}").status_code == 204
 
     # Same session cookie, next request: no workspace left.
-    assert editor.get("/api/scheduled-posts").status_code == 409
+    assert editor.get("/api/posts").status_code == 409
     assert me(editor)["workspaces"] == []
 
 
@@ -325,24 +333,30 @@ def test_ai_quota_is_shared_by_the_workspace(make_client: Callable[..., TestClie
     assert people["outsider"].post("/api/ai/captions", json=caption).status_code == 200
 
 
-def test_publisher_only_uses_the_posts_own_workspace_token(make_client: Callable[..., TestClient]) -> None:
+def test_publisher_only_uses_the_posts_own_workspace_token(
+    make_client: Callable[..., TestClient], monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import asyncio
 
-    from app import publisher
+    from app import meta_graph, publisher
 
     a = make_client("a@example.com", "A")
     b = make_client("b@example.com", "B")
     b_page = connect_page(b, "b-page")
-    asset = a.post("/api/assets", files={"file": ("x.jpg", b"img", "image/jpeg")}).json()
-    post = a.post("/api/scheduled-posts", json=future_post(media_name="x.jpg")).json()[0]
-    # Simulate a corrupted row pointing at another workspace's Page.
+    post = a.post("/api/posts", json=future_post(caption="Hi")).json()
+    # Simulate a corrupted row: a target in A pointing at B's Page, due now.
     with database.connect_database() as connection:
         connection.execute(
-            "UPDATE scheduled_posts SET platforms_json = ?, asset_id = ?, facebook_account_id = ?, "
-            "scheduled_date = '2020-01-01' WHERE id = ?",
-            (json.dumps(["facebook"]), asset["id"], b_page, post["id"]),
-        )
-    asyncio.run(publisher.publish_due_scheduled_posts())
-    status = next(p for p in a.get("/api/scheduled-posts").json() if p["id"] == post["id"])
-    assert status["publish_status"] == "failed"
-    assert "no longer connected" in status["publish_error"]
+            "INSERT INTO post_targets (id, post_id, social_account_id, platform, account_name, status) "
+            "VALUES ('t1', ?, ?, 'facebook', 'Page', 'queued')", (post["id"], b_page))
+        connection.execute("UPDATE posts SET status = 'scheduled', scheduled_at = '2020-01-01T00:00:00+00:00' "
+                           "WHERE id = ?", (post["id"],))
+
+    async def never(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Meta must not be called with another workspace's token")
+
+    monkeypatch.setattr(meta_graph, "request", never)
+    asyncio.run(publisher.publish_due())
+    target = a.get(f"/api/posts/{post['id']}").json()["targets"][0]
+    assert target["status"] == "failed"
+    assert "disconnected" in target["last_error"]

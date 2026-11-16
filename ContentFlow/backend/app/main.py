@@ -8,10 +8,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import ALLOWED_ORIGINS, publisher_interval_seconds, publisher_is_enabled
-from app.database import connect_database, initialize_storage
+from app.database import initialize_storage
 from app.observability import RequestIdMiddleware, configure_logging
-from app.publisher import run_publisher_scheduler
-from app.routers import ai, assets, auth, scheduled_posts, social, submissions, webhooks, workspaces
+from app.publisher import recover_interrupted, run_publisher_scheduler
+from app.routers import ai, assets, auth, posts, social, submissions, webhooks, workspaces
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -23,15 +23,7 @@ async def lifespan(_: FastAPI):
     publisher_task = None
     if publisher_is_enabled():
         publisher_interval_seconds()
-        with connect_database() as connection:
-            connection.execute(
-                """
-                UPDATE scheduled_posts
-                SET publish_status = 'failed',
-                    publish_error = 'The publisher stopped while this post was being sent. Check the Page before retrying.'
-                WHERE publish_status = 'publishing'
-                """
-            )
+        recover_interrupted()
         publisher_task = asyncio.create_task(run_publisher_scheduler())
     try:
         yield
@@ -46,7 +38,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Content-Flow API",
-    description="Content intake API for the Content-Flow frontend.",
+    description="Content Flow: social media planning, approval and publishing.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -71,7 +63,7 @@ def health_check() -> dict[str, str]:
 app.include_router(auth.router)
 app.include_router(social.router)
 app.include_router(ai.router)
-app.include_router(scheduled_posts.router)
+app.include_router(posts.router)
 app.include_router(assets.router)
 app.include_router(submissions.router)
 app.include_router(webhooks.router)

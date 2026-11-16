@@ -14,10 +14,10 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | SQLite → PostgreSQL support and migration tooling | ✅ | Paid database not provisioned (awaiting approval) |
 | Workspaces, roles, client management | ✅ | Invitations by shareable link (email delivery not configured) |
 | Meta connection: Pages, Instagram, reconnect | ✅ | Live sign-in needs your Meta app + test Page (manual test) |
-| Content drafts, platform versions, media library | ⏳ | |
-| Client approval workflow | ⏳ | |
-| Facebook and Instagram publishing | 🟡 | Scheduled Facebook Page images only |
-| Scheduling worker with retries | 🟡 | Worker exists; retries pending |
+| Content drafts, platform versions, media library | ✅ | |
+| Client approval workflow | ✅ | |
+| Facebook and Instagram publishing | ✅ | Live posting needs a real Page/IG account (manual test) |
+| Scheduling worker with retries | ✅ | Enable with `CONTENT_FLOW_PUBLISHER_ENABLED=true` |
 | Analytics | ⏳ | |
 | TikTok, LinkedIn | ⏳ | |
 
@@ -27,7 +27,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
   and set the Blueprint Path to `ContentFlow/render.yaml`.
 - Approval before provisioning a paid PostgreSQL database.
 - Approval before migrating the real local database to new schema versions.
-  It is at `0001_baseline`; the code needs `0002_workspace_tenancy`, so the
+  It is at `0001_baseline`; the code needs `0004_posts`, so the
   local API refuses to start until `python -m app.migrate upgrade` is run
   (it takes a verified backup first). Rehearsed successfully on a copy.
 

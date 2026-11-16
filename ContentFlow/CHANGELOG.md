@@ -4,6 +4,27 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Posts, approvals, scheduling and publishing
+- New post model: drafts with media, one target per connected account with an
+  optional per-platform caption, live platform checks (Instagram JPEG/aspect
+  ratio/carousel/caption/hashtag limits, Facebook photo/video rules).
+- Client review: send to a reviewer, approve / reject / request changes with
+  comments; full history. Editing approved content needs a new approval.
+  Clients see only posts sent to them (and their media).
+- Scheduling in the viewer's IANA timezone (daylight saving handled), bulk
+  scheduling (all-or-nothing), unschedule, Publish now, Retry failed.
+- Publisher: Facebook text/photo/multi-photo/video, Instagram image/Reels/
+  carousel via signed expiring media links (PNG/WebP converted to JPEG).
+  Atomic claims (no double publishing), automatic retries only for errors Meta
+  confirms as temporary, interrupted sends never resent, expired tokens flag
+  the account. Every attempt recorded.
+- Media library is now persistent (list, view, delete; in-use media protected);
+  uploads are verified as real images/videos.
+- Migration `0004_posts` copies existing scheduled posts into the new model
+  and keeps the old table as an archive.
+- New screens: Posts, New post (editor), Review queue; Calendar, Overview,
+  Bulk schedule and Content library use the new API.
+
 ### Facebook and Instagram connections
 - After Meta sign-in you choose which Pages and Instagram accounts to add;
   nothing is saved until you do. Pages are paginated; Pages your role cannot

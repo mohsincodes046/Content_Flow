@@ -1,146 +1,199 @@
+"""Background publisher: sends due post targets to Facebook and Instagram.
+
+Guarantees:
+  * A target is claimed atomically (queued -> publishing) under the write lock, so
+    concurrent workers never publish it twice.
+  * Only failures where Meta clearly answered "not now" (rate limits, temporary
+    errors, 5xx) are retried automatically, with backoff. A network timeout may
+    mean the post went out, so it is never retried automatically.
+  * Expired or revoked tokens flag the account as needing reconnection.
+  * A post is "published" only when Meta returned its id.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from uuid import uuid4
 
-import httpx
-
-from app import config, social_oauth
-from app.config import publisher_interval_seconds
-from app.database import Row, connect_database
-from app.schemas import ScheduledPostCreate
+from app import media, meta_graph
+from app.config import env_int, publisher_interval_seconds
+from app.database import connect_database, utc_now
+from app.posts import add_event, post_media, refresh_publish_status
 from app.security import token_cipher
 
 logger = logging.getLogger(__name__)
 
-
-def scheduled_post_utc(row: Row) -> datetime:
-    local_datetime = datetime.combine(
-        date.fromisoformat(row["scheduled_date"]),
-        time.fromisoformat(row["scheduled_time"]),
-    )
-    local_timezone = timezone(timedelta(minutes=-row["timezone_offset_minutes"]))
-    return local_datetime.replace(tzinfo=local_timezone).astimezone(timezone.utc)
+RETRY_DELAYS = (timedelta(minutes=2), timedelta(minutes=10), timedelta(minutes=30))
+STALE_CLAIM = timedelta(minutes=15)
+BATCH_SIZE = 20
 
 
-def scheduled_create_utc(post: ScheduledPostCreate) -> datetime:
-    local_datetime = datetime.combine(post.date, post.time)
-    local_timezone = timezone(timedelta(minutes=-post.timezone_offset_minutes))
-    return local_datetime.replace(tzinfo=local_timezone).astimezone(timezone.utc)
+def max_attempts() -> int:
+    return env_int("CONTENT_FLOW_PUBLISH_MAX_ATTEMPTS", 3)
 
 
-async def publish_due_scheduled_posts(now: datetime | None = None) -> None:
-    current_time = now or datetime.now(timezone.utc)
-    if current_time.tzinfo is None:
-        raise ValueError("Publisher time must be timezone-aware.")
-    current_time = current_time.astimezone(timezone.utc)
-    claimed_posts: list[Row] = []
+def recover_interrupted(now: Optional[datetime] = None) -> int:
+    """Targets left "publishing" by a crash: Meta may or may not have received them."""
+    cutoff = ((now or datetime.now(timezone.utc)) - STALE_CLAIM).isoformat()
     with connect_database() as connection:
         connection.lock_for_write()
-        candidates = connection.execute(
-            """
-            SELECT * FROM scheduled_posts
-            WHERE publish_status = 'scheduled'
-                AND asset_id IS NOT NULL
-                AND facebook_account_id IS NOT NULL
-            ORDER BY scheduled_date, scheduled_time, created_at
-            """
+        rows = connection.execute(
+            "SELECT id, post_id FROM post_targets WHERE status = 'publishing' AND (claimed_at IS NULL OR claimed_at < ?)",
+            (cutoff,),
         ).fetchall()
-        for row in candidates:
-            if "facebook" not in json.loads(row["platforms_json"]):
-                continue
-            if scheduled_post_utc(row) > current_time:
-                continue
+        for row in rows:
+            connection.execute(
+                "UPDATE post_targets SET status = 'failed', last_error = ? WHERE id = ?",
+                ("Publishing was interrupted. Check the account to see whether the post went out before retrying.", row["id"]),
+            )
+            refresh_publish_status(connection, row["post_id"])
+    return len(rows)
+
+
+def _claim(now: datetime, post_id: Optional[str]) -> list[str]:
+    stamp = now.isoformat()
+    with connect_database() as connection:
+        connection.lock_for_write()
+        query = (
+            "SELECT post_targets.id, post_targets.post_id FROM post_targets JOIN posts ON posts.id = post_targets.post_id "
+            "WHERE post_targets.status = 'queued' AND posts.status IN ('scheduled', 'publishing') "
+            "AND posts.scheduled_at <= ? AND (post_targets.next_attempt_at IS NULL OR post_targets.next_attempt_at <= ?)"
+        )
+        params: list = [stamp, stamp]
+        if post_id:
+            query += " AND posts.id = ?"
+            params.append(post_id)
+        rows = connection.execute(query + f" ORDER BY posts.scheduled_at LIMIT {BATCH_SIZE}", params).fetchall()
+        claimed = []
+        for row in rows:
             updated = connection.execute(
-                """
-                UPDATE scheduled_posts
-                SET publish_status = 'publishing', publish_error = NULL
-                WHERE id = ? AND publish_status = 'scheduled'
-                """,
-                (row["id"],),
+                "UPDATE post_targets SET status = 'publishing', claimed_at = ? WHERE id = ? AND status = 'queued'",
+                (stamp, row["id"]),
             )
             if updated.rowcount:
-                claimed_posts.append(row)
+                claimed.append(row["id"])
+                connection.execute(
+                    "UPDATE posts SET status = 'publishing', updated_at = ? WHERE id = ? AND status = 'scheduled'",
+                    (stamp, row["post_id"]),
+                )
+    return claimed
 
-    for row in claimed_posts:
-        try:
-            cipher = token_cipher()
+
+async def _send(target: dict, post: dict, account: dict, media_rows: list[dict]) -> meta_graph.PublishResult:
+    token = json.loads(token_cipher().decrypt(account["encrypted_tokens"].encode("ascii"))).get("access_token")
+    if not token:
+        raise meta_graph.GraphError("No access token is stored for this account. Reconnect it.", code=190)
+    caption = target["caption_override"] if target["caption_override"] is not None else post["caption"]
+    if target["platform"] == "facebook":
+        files = [meta_graph.MediaFile(media.asset_path(m["storage_name"]), m["filename"], m["media_type"]) for m in media_rows]
+        return await meta_graph.publish_facebook(account["account_id"], token, caption, files)
+    if target["platform"] == "instagram":
+        items = []
+        for m in media_rows:
+            if m["media_type"].startswith("image/"):
+                items.append(("image/jpeg", media.signed_media_url(media.instagram_image(m["storage_name"], m["media_type"]))))
+            else:
+                items.append((m["media_type"], media.signed_media_url(m["storage_name"])))
+        return await meta_graph.publish_instagram(account["account_id"], token, caption, items)
+    raise meta_graph.GraphError(f"Publishing to {target['platform']} is not available yet.")
+
+
+async def publish_target(target_id: str) -> None:
+    started = utc_now()
+    with connect_database() as connection:
+        target = dict(connection.execute("SELECT * FROM post_targets WHERE id = ?", (target_id,)).fetchone())
+        post = dict(connection.execute("SELECT * FROM posts WHERE id = ?", (target["post_id"],)).fetchone())
+        account_row = connection.execute(
+            "SELECT * FROM social_accounts WHERE id = ? AND workspace_id = ?",
+            (target["social_account_id"], post["workspace_id"]),
+        ).fetchone() if target["social_account_id"] else None
+        account = dict(account_row) if account_row else None
+        media_rows = [dict(row) for row in post_media(connection, post["id"])]
+
+    outcome, error_text, result, retry_at = "failed", None, None, None
+    try:
+        if account is None:
+            raise meta_graph.GraphError("The account was disconnected. Connect it again or remove it from the post.")
+        if account["status"] == "needs_reconnect":
+            raise meta_graph.GraphError("This account needs to be reconnected before it can publish.", code=190)
+        result = await _send(target, post, account, media_rows)
+        outcome = "published"
+    except meta_graph.GraphError as error:
+        error_text = error.message
+        attempt_number = target["attempts"] + 1
+        if error.needs_reconnect and account is not None:
             with connect_database() as connection:
-                account = connection.execute(
-                    """
-                    SELECT account_id, encrypted_tokens FROM social_accounts
-                    WHERE id = ? AND workspace_id = ? AND provider = 'meta' AND platform = 'facebook'
-                    """,
-                    (row["facebook_account_id"], row["workspace_id"]),
-                ).fetchone()
-                asset = connection.execute(
-                    """
-                    SELECT filename, media_type, storage_name FROM assets
-                    WHERE id = ? AND workspace_id = ?
-                    """,
-                    (row["asset_id"], row["workspace_id"]),
-                ).fetchone()
-            if account is None:
-                raise ValueError("The selected Facebook Page is no longer connected.")
-            if asset is None:
-                raise ValueError("The scheduled image is no longer available.")
-            if not asset["media_type"].startswith("image/"):
-                raise ValueError("Facebook scheduled publishing currently supports images only.")
-            media_path = config.UPLOAD_DIR / asset["storage_name"]
-            tokens = json.loads(cipher.decrypt(account["encrypted_tokens"].encode("ascii")))
-            access_token = tokens.get("access_token")
-            if not isinstance(access_token, str) or not access_token:
-                raise ValueError("The Facebook Page authorization has expired. Reconnect the Page.")
-            external_post_id = await social_oauth.publish_facebook_photo(
-                account["account_id"],
-                access_token,
-                media_path,
-                asset["filename"],
-                asset["media_type"],
-                row["caption"],
+                connection.execute(
+                    "UPDATE social_accounts SET status = 'needs_reconnect', last_error = ?, last_checked_at = ? WHERE id = ?",
+                    (error.message[:500], utc_now(), account["id"]),
+                )
+        elif error.status == 0 and error.transient:
+            error_text = (f"{error.message} Meta did not confirm the result, so it was not retried automatically. "
+                          "Check the account before retrying.")
+        elif error.retryable and attempt_number < max_attempts():
+            outcome = "retry"
+            delay = RETRY_DELAYS[min(attempt_number - 1, len(RETRY_DELAYS) - 1)]
+            retry_at = (datetime.now(timezone.utc) + delay).isoformat()
+    except media.MediaError as error:
+        error_text = str(error)
+    except Exception:
+        logger.exception("Unexpected error publishing target %s", target_id)
+        error_text = "An unexpected error occurred while publishing. Details are in the server logs."
+
+    finished = utc_now()
+    with connect_database() as connection:
+        connection.lock_for_write()
+        if outcome == "published":
+            connection.execute(
+                "UPDATE post_targets SET status = 'published', attempts = attempts + 1, external_id = ?, external_url = ?, "
+                "published_at = ?, last_error = NULL, next_attempt_at = NULL WHERE id = ?",
+                (result.external_id, result.url, finished, target_id),
             )
-            with connect_database() as connection:
-                connection.execute(
-                    """
-                    UPDATE scheduled_posts
-                    SET publish_status = 'published', publish_error = NULL, published_post_id = ?
-                    WHERE id = ? AND publish_status = 'publishing'
-                    """,
-                    (external_post_id, row["id"]),
-                )
-        except (httpx.HTTPError, OSError, RuntimeError, ValueError, KeyError) as error:
-            message = str(error) or "Facebook could not publish this post."
-            with connect_database() as connection:
-                connection.execute(
-                    """
-                    UPDATE scheduled_posts
-                    SET publish_status = 'failed', publish_error = ?
-                    WHERE id = ? AND publish_status = 'publishing'
-                    """,
-                    (message[:500], row["id"]),
-                )
-            logger.exception("Facebook publishing failed for scheduled post %s.", row["id"])
-        except Exception:
-            with connect_database() as connection:
-                connection.execute(
-                    """
-                    UPDATE scheduled_posts
-                    SET publish_status = 'failed',
-                        publish_error = 'An unexpected publishing error occurred. Check the backend logs.'
-                    WHERE id = ? AND publish_status = 'publishing'
-                    """,
-                    (row["id"],),
-                )
-            logger.exception("Unexpected Facebook publishing failure for scheduled post %s.", row["id"])
+            add_event(connection, post["id"], None, "published", f"{target['platform']}: {target['account_name']}")
+            connection.execute(
+                "UPDATE social_accounts SET status = 'active', last_error = NULL, last_checked_at = ? WHERE id = ?",
+                (finished, account["id"]),
+            )
+        else:
+            new_status = "queued" if outcome == "retry" else "failed"
+            connection.execute(
+                "UPDATE post_targets SET status = ?, attempts = attempts + 1, last_error = ?, next_attempt_at = ? WHERE id = ?",
+                (new_status, (error_text or "")[:1000], retry_at, target_id),
+            )
+            add_event(connection, post["id"], None, "retry_scheduled" if outcome == "retry" else "failed",
+                      f"{target['platform']}: {target['account_name']}: {error_text}")
+        connection.execute(
+            "INSERT INTO publish_attempts (id, target_id, started_at, finished_at, outcome, error, external_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid4()), target_id, started, finished, outcome, error_text, result.external_id if result else None),
+        )
+        refresh_publish_status(connection, post["id"])
+    log = logger.info if outcome == "published" else logger.warning
+    log("Target %s (%s) %s%s", target_id, target["platform"], outcome, f": {error_text}" if error_text else "")
+
+
+async def publish_due(now: Optional[datetime] = None, post_id: Optional[str] = None) -> int:
+    """Publish every due target (optionally only one post's). Returns how many were attempted."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    attempted = 0
+    while True:
+        claimed = _claim(current, post_id)
+        if not claimed:
+            return attempted
+        for target_id in claimed:
+            await publish_target(target_id)
+            attempted += 1
 
 
 async def run_publisher_scheduler() -> None:
     interval = publisher_interval_seconds()
     while True:
         try:
-            await publish_due_scheduled_posts()
+            recover_interrupted()
+            await publish_due()
         except Exception:
-            logger.exception("The scheduled-post publisher could not process its queue.")
+            logger.exception("The publisher could not process its queue.")
         await asyncio.sleep(interval)

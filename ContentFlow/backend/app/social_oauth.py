@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -38,10 +37,6 @@ def _token_url() -> str:
     return meta_graph.graph_url("oauth/access_token")
 
 
-class MetaAPIError(ValueError):
-    """A Graph API request failed; the message is safe to show to the user."""
-
-
 def graph_error_summary(response: httpx.Response) -> str:
     """Describe a failed Graph API response for logs without echoing the request.
 
@@ -58,26 +53,6 @@ def graph_error_summary(response: httpx.Response) -> str:
         f"HTTP {response.status_code}: {error.get('message')} "
         f"(type={error.get('type')}, code={error.get('code')}, subcode={error.get('error_subcode')})"
     )
-
-
-def _meta_error_message(response: httpx.Response) -> str:
-    """Build a user-facing message from a Graph API error response.
-
-    Graph errors look like {"error": {"message": ..., "code": ..., "error_subcode": ...}}.
-    Only Meta's message and codes are used, never request data, so tokens cannot leak.
-    """
-    try:
-        error = response.json().get("error")
-    except ValueError:
-        error = None
-    if not isinstance(error, dict):
-        return f"Facebook rejected the request (HTTP {response.status_code})."
-    message = str(error.get("message") or "Unknown error").strip()
-    code = error.get("code")
-    if code == 190:
-        return f"The Facebook Page authorization has expired or was revoked. Reconnect the Page. ({message})"
-    suffix = f" (code {code})" if code is not None else ""
-    return f"Facebook rejected the post: {message}{suffix}"
 
 
 def get_provider_settings(provider: str) -> dict[str, str]:
@@ -159,31 +134,3 @@ async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any])
     if provider != "meta":
         raise ValueError("Only Meta account discovery is enabled in this integration phase.")
     return await meta_graph.discover_accounts(token_data["access_token"])
-
-
-async def publish_facebook_photo(
-    page_id: str,
-    access_token: str,
-    media_path: Path,
-    filename: str,
-    media_type: str,
-    caption: str,
-) -> str:
-    if not page_id or not access_token:
-        raise ValueError("A Facebook Page and access token are required to publish.")
-    if not media_type.startswith("image/"):
-        raise ValueError("Facebook scheduled publishing currently supports images only.")
-    with media_path.open("rb") as media_file:
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                meta_graph.graph_url(f"{page_id}/photos"),
-                data={"access_token": access_token, "caption": caption},
-                files={"source": (filename, media_file, media_type)},
-            )
-    if response.is_error:
-        raise MetaAPIError(_meta_error_message(response))
-    payload = response.json()
-    post_id = payload.get("post_id") or payload.get("id")
-    if not isinstance(post_id, str) or not post_id:
-        raise ValueError("Meta did not return a Facebook post ID.")
-    return post_id

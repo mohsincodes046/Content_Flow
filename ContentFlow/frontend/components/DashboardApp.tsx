@@ -9,7 +9,10 @@ import SubmissionWorkflow from "./SubmissionWorkflow";
 import AccountsSection from "./AccountsSection";
 import TeamSection from "./TeamSection";
 import WorkspaceSwitcher, { NoWorkspace } from "./WorkspaceSwitcher";
-import { canEditContent, isSessionUser, type SessionUser } from "../lib/api";
+import { api, assetUrl, browserTimezone, canEditContent, isSessionUser, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
+import ComposePost from "./ComposePost";
+import PostsList from "./PostsList";
+import ReviewQueue from "./ReviewQueue";
 
 type MediaItem = { id: string; name: string; url: string; kind: "image" | "video" };
 type ScheduledPost = {
@@ -18,12 +21,13 @@ type ScheduledPost = {
   date: string;
   time: string;
   platform: string[];
+  accountIds: string[];
   caption: string;
   assetId?: string | null;
-  facebookAccountId?: string | null;
-  publishStatus: "scheduled" | "publishing" | "published" | "failed";
+  publishStatus: "draft" | "review" | "scheduled" | "publishing" | "published" | "failed";
   publishError?: string | null;
 };
+type ChannelOption = { id: string; platform: string; label: string; note: string };
 type SocialAccount = { id: string; label: string; color: string; icon: string };
 type ConnectedSocialAccount = { id: string; account_id: string; platform: string; account_name: string; account_type: string };
 type SocialProviderStatus = { provider: string; configured: boolean; accounts: ConnectedSocialAccount[]; publisher_enabled: boolean };
@@ -39,21 +43,13 @@ const accounts: SocialAccount[] = [
   { id: "youtube", label: "YouTube", color: "#e8584d", icon: "▶" },
 ];
 
-/** Short, truthful status for a channel based on real connections. */
-const channelStatus = (platform: string, connected: ConnectedSocialAccount[]) => {
-  const names = connected.filter((account) => account.platform === platform).map((account) => account.account_name);
-  if (platform === "facebook") {
-    return names.length ? `${names.length === 1 ? names[0] : `${names.length} Pages`} · auto-publish` : "Not connected";
-  }
-  if (platform === "instagram" && names.length) return `${names.length === 1 ? `@${names[0]}` : `${names.length} accounts`} · calendar only`;
-  return "Calendar only";
-};
-
 // Clients only review content sent to them and manage their own settings.
 const clientSections = new Set(["review-queue", "settings"]);
 const navigation = [
   { label: "Overview", href: "/dashboard", icon: "grid", section: "WORKSPACE" },
   { label: "Content library", href: "/content", icon: "image" },
+  { label: "Posts", href: "/posts", icon: "stack" },
+  { label: "New post", href: "/compose", icon: "plus" },
   { label: "Calendar", href: "/calendar", icon: "calendar" },
   { label: "Bulk schedule", href: "/bulk-schedule", icon: "stack", badge: "CORE" },
   { label: "Submit content", href: "/create-post", icon: "plus" },
@@ -72,90 +68,40 @@ const localDate = (date: Date) => {
   return `${year}-${month}-${day}`;
 };
 const todayString = () => localDate(new Date());
-const supportedPlatforms = new Set(["instagram", "facebook", "linkedin", "youtube", "tiktok"]);
 const publishStatusLabel: Record<ScheduledPost["publishStatus"], string> = {
+  draft: "Draft",
+  review: "In review",
   scheduled: "Scheduled",
   publishing: "Publishing…",
   published: "Published",
   failed: "Failed",
 };
-const isPublishStatus = (value: unknown): value is ScheduledPost["publishStatus"] =>
-  value === "scheduled" || value === "publishing" || value === "published" || value === "failed";
+const displayStatus = (status: PostStatus): ScheduledPost["publishStatus"] =>
+  status === "published" || status === "partially_published" ? "published"
+    : status === "failed" ? "failed"
+      : status === "publishing" ? "publishing"
+        : status === "scheduled" ? "scheduled"
+          : status === "in_review" || status === "approved" ? "review" : "draft";
 const sortScheduledPosts = (posts: ScheduledPost[]) => [...posts].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-const parseScheduledPosts = (value: unknown): ScheduledPost[] => {
-  if (!Array.isArray(value)) throw new Error("The server returned an invalid schedule.");
-  return value.map((item): ScheduledPost => {
-    if (
-      typeof item !== "object" ||
-      item === null ||
-      !("id" in item) ||
-      typeof item.id !== "string" ||
-      !("media_name" in item) ||
-      typeof item.media_name !== "string" ||
-      !("date" in item) ||
-      typeof item.date !== "string" ||
-      !("time" in item) ||
-      typeof item.time !== "string" ||
-      !("caption" in item) ||
-      typeof item.caption !== "string" ||
-      !("platforms" in item) ||
-      !Array.isArray(item.platforms) ||
-      !item.platforms.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform)) ||
-      !("publish_status" in item) || !isPublishStatus(item.publish_status) ||
-      ("asset_id" in item && typeof item.asset_id !== "string" && item.asset_id !== null) ||
-      ("facebook_account_id" in item && typeof item.facebook_account_id !== "string" && item.facebook_account_id !== null) ||
-      ("publish_error" in item && typeof item.publish_error !== "string" && item.publish_error !== null)
-    ) {
-      throw new Error("The server returned an invalid scheduled post.");
-    }
-    return {
-      id: item.id,
-      mediaName: item.media_name,
-      date: item.date,
-      time: item.time,
-      platform: item.platforms,
-      caption: item.caption,
-      assetId: "asset_id" in item && (typeof item.asset_id === "string" || item.asset_id === null) ? item.asset_id : null,
-      facebookAccountId: "facebook_account_id" in item && (typeof item.facebook_account_id === "string" || item.facebook_account_id === null) ? item.facebook_account_id : null,
-      publishStatus: item.publish_status,
-      publishError: "publish_error" in item && (typeof item.publish_error === "string" || item.publish_error === null) ? item.publish_error : null,
-    };
-  });
+/** A post shown on the calendar, in the viewer's local time. */
+const fromPost = (post: Post): ScheduledPost => {
+  const when = new Date(post.scheduled_at ?? post.created_at);
+  return {
+    id: post.id,
+    mediaName: post.title || post.media[0]?.filename || "Untitled post",
+    date: localDate(when),
+    time: `${String(when.getHours()).padStart(2, "0")}:${String(when.getMinutes()).padStart(2, "0")}`,
+    platform: Array.from(new Set([...post.targets.map((target) => target.platform), ...post.planned_platforms])),
+    accountIds: post.targets.map((target) => target.social_account_id).filter((id): id is string => Boolean(id)),
+    caption: post.caption,
+    assetId: post.media[0]?.id ?? null,
+    publishStatus: displayStatus(post.status),
+    publishError: post.targets.find((target) => target.status === "failed")?.last_error ?? null,
+  };
 };
-const parseLegacyScheduledPosts = (saved: string): ScheduledPost[] => {
-  const value: unknown = JSON.parse(saved);
-  if (!Array.isArray(value)) throw new Error("Older saved schedules have an invalid format.");
-  return value.map((item): ScheduledPost => {
-    if (
-      typeof item !== "object" ||
-      item === null ||
-      !("id" in item) ||
-      typeof item.id !== "string" ||
-      !("mediaName" in item) ||
-      typeof item.mediaName !== "string" ||
-      !("date" in item) ||
-      typeof item.date !== "string" ||
-      !("time" in item) ||
-      typeof item.time !== "string" ||
-      !("caption" in item) ||
-      typeof item.caption !== "string" ||
-      !("platform" in item) ||
-      !Array.isArray(item.platform) ||
-      !item.platform.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform))
-    ) {
-      throw new Error("An older saved schedule has an invalid format.");
-    }
-    return {
-      id: item.id,
-      mediaName: item.mediaName,
-      date: item.date,
-      time: item.time,
-      platform: item.platform,
-      caption: item.caption,
-      publishStatus: "scheduled",
-    };
-  });
-};
+const toMediaItem = (asset: Asset): MediaItem => ({
+  id: asset.id, name: asset.filename, url: assetUrl(asset.id), kind: asset.media_type.startsWith("video/") ? "video" : "image",
+});
 const apiErrorMessage = async (response: Response, fallback: string) => {
   const payload: unknown = await response.json().catch(() => null);
   if (typeof payload === "object" && payload !== null && "detail" in payload && typeof payload.detail === "string") {
@@ -207,11 +153,8 @@ export default function DashboardApp({ section }: { section: string }) {
   const [mediaUploading, setMediaUploading] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({});
-  const [selectedAccounts, setSelectedAccounts] = useState<string[]>(["instagram", "tiktok"]);
+  const [selectedAccounts, setSelectedAccounts] = useState<string[]>([]);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedSocialAccount[]>([]);
-  const [facebookPages, setFacebookPages] = useState<ConnectedSocialAccount[]>([]);
-  const [facebookPagesError, setFacebookPagesError] = useState("");
-  const [selectedFacebookPageId, setSelectedFacebookPageId] = useState("");
   const [facebookPublisherEnabled, setFacebookPublisherEnabled] = useState(false);
   const [startDate, setStartDate] = useState(todayString);
   const [endDate, setEndDate] = useState("");
@@ -252,7 +195,6 @@ export default function DashboardApp({ section }: { section: string }) {
     if (!currentUser || !canEditContent(currentUser.role)) return;
     const controller = new AbortController();
     async function loadFacebookPages() {
-      setFacebookPagesError("");
       try {
         const response = await fetch(`${apiUrl}/api/social/providers`, {
           credentials: "include",
@@ -278,16 +220,11 @@ export default function DashboardApp({ section }: { section: string }) {
           && "account_name" in account && typeof account.account_name === "string"
           && "account_type" in account && typeof account.account_type === "string",
         );
-        const pages = validAccounts.filter((account) => account.platform === "facebook");
         setConnectedAccounts(validAccounts);
-        setFacebookPages(pages);
-        setSelectedFacebookPageId((current) =>
-          pages.some((page) => page.id === current) ? current : pages.length === 1 ? pages[0].id : "",
-        );
       } catch (error) {
         if (controller.signal.aborted) return;
         console.error("Unable to load connected Facebook Pages.", error);
-        setFacebookPagesError(error instanceof Error ? error.message : "Unable to load connected Facebook Pages.");
+        setNotice(error instanceof Error ? error.message : "Unable to load connected accounts.");
       }
     }
     void loadFacebookPages();
@@ -295,71 +232,23 @@ export default function DashboardApp({ section }: { section: string }) {
   }, [currentUser]);
 
   useEffect(() => {
-    const userId = currentUser?.id;
-    if (!userId) return;
-    if (!canEditContent(currentUser?.role)) return;
-
-    const controller = new AbortController();
-    async function loadScheduledPosts() {
-      setPostsLoading(true);
+    if (!currentUser?.id || !canEditContent(currentUser.role)) return;
+    let active = true;
+    Promise.all([
+      api<Post[]>("/api/posts", {}, "Unable to load your posts"),
+      api<Asset[]>("/api/assets", {}, "Unable to load your media library"),
+    ]).then(([loadedPosts, assets]) => {
+      if (!active) return;
+      setPosts(sortScheduledPosts(loadedPosts.filter((post) => post.scheduled_at).map(fromPost)));
+      setMedia(assets.map(toMediaItem));
       setPostsLoadError("");
-      try {
-        const response = await fetch(`${apiUrl}/api/scheduled-posts`, {
-          credentials: "include",
-          signal: controller.signal,
-        });
-        if (response.status === 401) {
-          router.replace("/login");
-          throw new Error("Your session has expired. Please sign in again.");
-        }
-        if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to load your saved schedule"));
-        let loadedPosts = parseScheduledPosts(await response.json());
-        setPosts(loadedPosts);
-
-        const legacyKey = `content-flow-posts-${userId}`;
-        const legacySnapshot = window.localStorage.getItem(legacyKey);
-        if (legacySnapshot) {
-          const legacyPosts = parseLegacyScheduledPosts(legacySnapshot);
-          for (let offset = 0; offset < legacyPosts.length; offset += 366) {
-            const batch = legacyPosts.slice(offset, offset + 366);
-            const migrationResponse = await fetch(`${apiUrl}/api/scheduled-posts`, {
-              method: "POST",
-              credentials: "include",
-              signal: controller.signal,
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                posts: batch.map(({ mediaName, date, time, platform, caption }) => ({
-                  media_name: mediaName,
-                  date,
-                  time,
-                  platforms: platform,
-                  caption,
-                })),
-              }),
-            });
-            if (!migrationResponse.ok) {
-              throw new Error(await apiErrorMessage(migrationResponse, "Unable to move older schedules to your account"));
-            }
-            const migrated = parseScheduledPosts(await migrationResponse.json());
-            loadedPosts = sortScheduledPosts([
-              ...loadedPosts,
-              ...migrated.filter((post) => !loadedPosts.some((loaded) => loaded.id === post.id)),
-            ]);
-            setPosts(loadedPosts);
-          }
-          window.localStorage.removeItem(legacyKey);
-        }
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        console.error("Unable to load or migrate scheduled posts.", error);
-        setPostsLoadError(error instanceof Error ? error.message : "Unable to load your saved schedule.");
-      } finally {
-        if (!controller.signal.aborted) setPostsLoading(false);
-      }
-    }
-    void loadScheduledPosts();
-    return () => controller.abort();
-  }, [currentUser?.id, currentUser?.role, postsReloadKey, router]);
+    }).catch((error: unknown) => {
+      if (active) setPostsLoadError(error instanceof Error ? error.message : "Unable to load your posts.");
+    }).finally(() => {
+      if (active) setPostsLoading(false);
+    });
+    return () => { active = false; };
+  }, [currentUser?.id, currentUser?.role, postsReloadKey]);
 
   async function handleLogout() {
     if (logoutPending) return;
@@ -382,12 +271,16 @@ export default function DashboardApp({ section }: { section: string }) {
     if (currentUser?.role === "client" && !clientSections.has(section)) router.replace("/review-queue");
   }, [currentUser?.role, section, router]);
 
-  const removeMedia = useCallback((id: string) => {
-    const item = media.find((entry) => entry.id === id);
-    if (item) URL.revokeObjectURL(item.url);
-    setMedia((current) => current.filter((entry) => entry.id !== id));
-    setSelected((current) => current.filter((entry) => entry !== id));
-  }, [media]);
+  const removeMedia = useCallback(async (id: string) => {
+    try {
+      await api(`/api/assets/${encodeURIComponent(id)}`, { method: "DELETE" }, "Unable to delete the media");
+      setMedia((current) => current.filter((entry) => entry.id !== id));
+      setSelected((current) => current.filter((entry) => entry !== id));
+      setNotice("Media deleted from your library.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Unable to delete the media.");
+    }
+  }, []);
 
   const uploadFiles = useCallback(async (files: FileList | File[]) => {
     const accepted = Array.from(files).filter((file) => (file.type.startsWith("image/") || file.type.startsWith("video/")) && file.size <= 50 * 1024 * 1024);
@@ -415,10 +308,10 @@ export default function DashboardApp({ section }: { section: string }) {
         const item = {
           id: uploaded.id,
           name: uploaded.filename,
-          url: URL.createObjectURL(file),
+          url: assetUrl(uploaded.id),
           kind: file.type.startsWith("video/") ? "video" as const : "image" as const,
         };
-        setMedia((current) => [...current, item]);
+        setMedia((current) => [item, ...current]);
         setSelected((current) => [...current, item.id]);
       }
       if (accepted.length === files.length) setNotice("");
@@ -449,6 +342,18 @@ export default function DashboardApp({ section }: { section: string }) {
     return result;
   }, [startDate, endDate]);
 
+  const channelOptions: ChannelOption[] = useMemo(() => [
+    ...connectedAccounts.filter((account) => account.platform === "facebook" || account.platform === "instagram").map((account) => ({
+      id: account.id,
+      platform: account.platform,
+      label: account.platform === "instagram" ? `@${account.account_name}` : account.account_name,
+      note: account.platform === "instagram" ? "Instagram · auto-publish" : "Facebook Page · auto-publish",
+    })),
+    ...accounts.filter((platform) => !connectedAccounts.some((account) => account.platform === platform.id)).map((platform) => ({
+      id: `plan:${platform.id}`, platform: platform.id, label: platform.label, note: "Not connected · calendar only",
+    })),
+  ], [connectedAccounts]);
+
   const preview = useMemo(() => {
     const eligibleDates = days.filter((date) => {
       const weekday = new Date(`${date}T12:00:00`).getDay();
@@ -461,9 +366,11 @@ export default function DashboardApp({ section }: { section: string }) {
       const date = eligibleDates[index];
       if (!item || !date) return null;
       const id = `${mediaId}-${date}`;
-      return { id, mediaId, mediaName: item.name, mediaKind: item.kind, mediaUrl: item.url, date, time, platform: selectedAccounts, caption: captionEdits[id] ?? "" };
+      const platform = Array.from(new Set(selectedAccounts.map((option) => channelOptions.find((item) => item.id === option)?.platform ?? option)));
+      return { id, mediaId, mediaName: item.name, mediaKind: item.kind, mediaUrl: item.url, date, time, platform, caption: captionEdits[id] ?? "" };
     }).filter((post): post is NonNullable<typeof post> => post !== null);
-  }, [days, frequency, customDays, selected, media, time, selectedAccounts, captionEdits]);
+  }, [days, frequency, customDays, selected, media, time, selectedAccounts, captionEdits, channelOptions]);
+  const targetAccountIds = selectedAccounts.filter((id) => !id.startsWith("plan:"));
 
   const expectedCount = useMemo(() => days.filter((date) => {
     const weekday = new Date(`${date}T12:00:00`).getDay();
@@ -471,7 +378,7 @@ export default function DashboardApp({ section }: { section: string }) {
     if (frequency === "custom") return customDays.includes(weekday);
     return true;
   }).length, [days, frequency, customDays]);
-  const blocked = useMemo(() => preview.some((candidate) => posts.some((saved) => saved.date === candidate.date && saved.time === candidate.time && saved.platform.some((platform) => candidate.platform.includes(platform)))), [preview, posts]);
+  const blocked = useMemo(() => preview.some((candidate) => posts.some((saved) => saved.date === candidate.date && saved.time === candidate.time && saved.accountIds.some((account) => targetAccountIds.includes(account)))), [preview, posts, targetAccountIds]);
   const sectionName = navigation.find((item) => item.href === `/${section}`)?.label ?? "Overview";
   const title = section === "bulk-schedule" ? "Bulk schedule" : sectionName;
   async function saveSchedule() {
@@ -487,16 +394,6 @@ export default function DashboardApp({ section }: { section: string }) {
       setNotice(selectedAccounts.length === 0 ? "Choose at least one social account before scheduling." : "Add some photos or videos first, then your schedule is ready.");
       return;
     }
-    if (selectedAccounts.includes("facebook") && !selectedFacebookPageId) {
-      setNotice(facebookPages.length
-        ? "Choose the Facebook Page that should receive this post."
-        : "Connect a Facebook Page first on the Social accounts page.");
-      return;
-    }
-    if (selectedAccounts.includes("facebook") && preview.some((post) => post.mediaKind !== "image")) {
-      setNotice("Facebook scheduled publishing currently supports images only. Remove video posts or deselect Facebook.");
-      return;
-    }
     if (blocked) {
       setNotice("There's already a post planned for one of these accounts at the same time. Change the publishing time or edit your existing schedule.");
       return;
@@ -504,35 +401,29 @@ export default function DashboardApp({ section }: { section: string }) {
     if (scheduleMutationPending) return;
     setScheduleMutationPending(true);
     try {
-      const response = await fetch(`${apiUrl}/api/scheduled-posts`, {
+      const planned = selectedAccounts.filter((id) => id.startsWith("plan:")).map((id) => id.slice(5));
+      const saved = await api<Post[]>("/api/posts/bulk", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        json: {
           posts: preview.map((post) => ({
-            media_name: post.mediaName,
-            date: post.date,
-            time: post.time,
-            platforms: post.platform,
+            title: post.mediaName,
             caption: post.caption,
-            asset_id: post.mediaId,
-            facebook_account_id: post.platform.includes("facebook") ? selectedFacebookPageId : null,
-            timezone_offset_minutes: new Date().getTimezoneOffset(),
+            asset_ids: [post.mediaId],
+            targets: targetAccountIds.map((id) => ({ social_account_id: id })),
+            planned_platforms: planned,
+            action: targetAccountIds.length ? "schedule" : "draft",
+            schedule: { local_datetime: `${post.date}T${post.time}`, timezone: browserTimezone() },
           })),
-        }),
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to save scheduled posts"));
-      const savedPosts = parseScheduledPosts(await response.json());
-      setPosts((current) => sortScheduledPosts([
-        ...current,
-        ...savedPosts.filter((saved) => !current.some((post) => post.id === saved.id)),
-      ]));
-      const includesFacebook = preview.some((post) => post.platform.includes("facebook"));
-      setNotice(includesFacebook && facebookPublisherEnabled
-        ? `${savedPosts.length} ${savedPosts.length === 1 ? "post is" : "posts are"} scheduled for ${facebookPages.find((page) => page.id === selectedFacebookPageId)?.account_name}. Facebook will publish them at the selected time.`
-        : includesFacebook
-          ? `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} saved to the calendar. Automatic publishing is turned off on this server, so nothing will be posted yet.`
-          : `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} saved to the calendar. Automatic publishing is currently implemented for Facebook Page image posts only.`);
+        },
+      }, "Unable to save the schedule");
+      const savedPosts = saved.map(fromPost);
+      setPosts((current) => sortScheduledPosts([...current, ...savedPosts.filter((item) => !current.some((existing) => existing.id === item.id))]));
+      setSelected([]);
+      setNotice(!targetAccountIds.length
+        ? `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} saved as calendar drafts. Connect an account to publish them.`
+        : facebookPublisherEnabled
+          ? `${savedPosts.length} post${savedPosts.length === 1 ? " is" : "s are"} scheduled and will publish automatically at the chosen times.`
+          : `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} scheduled. Automatic publishing is turned off on this server, so nothing will be posted yet.`);
     } catch (error) {
       console.error("Unable to save scheduled posts.", error);
       setNotice(error instanceof Error ? error.message : "Your schedule couldn't be saved. Please try again.");
@@ -545,11 +436,7 @@ export default function DashboardApp({ section }: { section: string }) {
     if (scheduleMutationPending) return;
     setScheduleMutationPending(true);
     try {
-      const response = await fetch(`${apiUrl}/api/scheduled-posts/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to remove the scheduled post"));
+      await api(`/api/posts/${encodeURIComponent(id)}`, { method: "DELETE" }, "Unable to remove the post");
       setPosts((current) => current.filter((post) => post.id !== id));
       setNotice("Post removed from your schedule.");
     } catch (error) {
@@ -563,21 +450,18 @@ export default function DashboardApp({ section }: { section: string }) {
   async function reschedulePost(id: string, date: string) {
     const movingPost = posts.find((post) => post.id === id);
     if (!movingPost || movingPost.date === date || scheduleMutationPending) return;
-    const collision = posts.some((post) => post.id !== id && post.date === date && post.time === movingPost.time && post.platform.some((platform) => movingPost.platform.includes(platform)));
+    const collision = posts.some((post) => post.id !== id && post.date === date && post.time === movingPost.time && post.accountIds.some((account) => movingPost.accountIds.includes(account)));
     if (collision) {
       setNotice("There’s already a post planned for one of these channels at that time. Try another date.");
       return;
     }
     setScheduleMutationPending(true);
     try {
-      const response = await fetch(`${apiUrl}/api/scheduled-posts/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date }),
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to change the scheduled date"));
-      const updatedPost = parseScheduledPosts([await response.json()])[0];
+      const moved = await api<Post>(`/api/posts/${encodeURIComponent(id)}/schedule`, {
+        method: "POST",
+        json: { schedule: { local_datetime: `${date}T${movingPost.time}`, timezone: browserTimezone() } },
+      }, "Unable to change the scheduled date");
+      const updatedPost = fromPost(moved);
       setPosts((current) => sortScheduledPosts(current.map((post) => post.id === id ? updatedPost : post)));
       setNotice(`Post moved to ${friendlyDate(date)}.`);
     } catch (error) {
@@ -626,13 +510,13 @@ export default function DashboardApp({ section }: { section: string }) {
     return <main className="auth-check-screen"><Logo /><h1>Dashboard sign-in required</h1><p>{authError || "Sign in to continue to your workspace."}</p><Link className="button button-primary" href="/login">Sign in</Link></main>;
   }
 
-  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>{workspaceName}</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><div className="notification-wrap"><button aria-label={failedPosts.length ? `Notifications: ${failedPosts.length} failed ${failedPosts.length === 1 ? "post" : "posts"}` : "Notifications"} className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" />{failedPosts.length > 0 && <i />}</button>{showNotifications && <div className="notification-popover">{failedPosts.length ? <><b>{failedPosts.length} {failedPosts.length === 1 ? "post" : "posts"} could not publish</b>{failedPosts.slice(0, 3).map((post) => <p key={post.id}><strong>{friendlyDate(post.date)} · {post.mediaName}</strong><br />{post.publishError ?? "Publishing failed."}</p>)}</> : <><b>You’re all caught up</b><p>Publishing problems will show up here.</p></>}<Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><button type="button" className="topbar-avatar" onClick={handleLogout} aria-label="Sign out of Content-Flow">{initials}</button></div></header><div className="page-content">{postsLoading && canEditContent(currentUser.role) && <p className="schedule-state" role="status">Loading your saved schedule…</p>}{postsLoadError && <div className="schedule-load-error" role="alert"><span>{postsLoadError}</span><button type="button" onClick={() => setPostsReloadKey((current) => current + 1)}>Try again</button></div>}{section === "review-queue" && currentUser.role === "client" ? <section className="panel upcoming-empty"><b>Nothing to review yet.</b><p>Content your agency sends you for approval will appear here.</p></section> : section === "create-post" || section === "review-queue" ? <SubmissionWorkflow view={section === "create-post" ? "submit" : "review"} setNotice={setNotice} /> : section === "bulk-schedule" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} mediaUploading={mediaUploading} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} connectedAccounts={connectedAccounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} facebookPages={facebookPages} facebookPagesError={facebookPagesError} facebookPublisherEnabled={facebookPublisherEnabled} selectedFacebookPageId={selectedFacebookPageId} setSelectedFacebookPageId={setSelectedFacebookPageId} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} saveDisabled={postsLoading || Boolean(postsLoadError) || scheduleMutationPending || mediaUploading} saving={scheduleMutationPending} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} currentUser={currentUser} connectedAccounts={connectedAccounts} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span></footer></div></main></div>;
+  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>{workspaceName}</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><div className="notification-wrap"><button aria-label={failedPosts.length ? `Notifications: ${failedPosts.length} failed ${failedPosts.length === 1 ? "post" : "posts"}` : "Notifications"} className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" />{failedPosts.length > 0 && <i />}</button>{showNotifications && <div className="notification-popover">{failedPosts.length ? <><b>{failedPosts.length} {failedPosts.length === 1 ? "post" : "posts"} could not publish</b>{failedPosts.slice(0, 3).map((post) => <p key={post.id}><strong>{friendlyDate(post.date)} · {post.mediaName}</strong><br />{post.publishError ?? "Publishing failed."}</p>)}</> : <><b>You’re all caught up</b><p>Publishing problems will show up here.</p></>}<Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><button type="button" className="topbar-avatar" onClick={handleLogout} aria-label="Sign out of Content-Flow">{initials}</button></div></header><div className="page-content">{postsLoading && canEditContent(currentUser.role) && <p className="schedule-state" role="status">Loading your saved schedule…</p>}{postsLoadError && <div className="schedule-load-error" role="alert"><span>{postsLoadError}</span><button type="button" onClick={() => setPostsReloadKey((current) => current + 1)}>Try again</button></div>}{section === "review-queue" ? <ReviewQueue user={currentUser} setNotice={setNotice} /> : section === "compose" ? <ComposePost user={currentUser} setNotice={setNotice} /> : section === "posts" ? <PostsList setNotice={setNotice} /> : section === "create-post" ? <SubmissionWorkflow view={section === "create-post" ? "submit" : "review"} setNotice={setNotice} /> : section === "bulk-schedule" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} mediaUploading={mediaUploading} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} channelOptions={channelOptions} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} facebookPublisherEnabled={facebookPublisherEnabled} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} saveDisabled={postsLoading || Boolean(postsLoadError) || scheduleMutationPending || mediaUploading} saving={scheduleMutationPending} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} currentUser={currentUser} connectedAccounts={connectedAccounts} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span></footer></div></main></div>;
 }
 
 type BulkProps = {
   section: string; media: MediaItem[]; selected: string[]; setSelected: React.Dispatch<React.SetStateAction<string[]>>; onFilesDrop: (files: FileList | File[]) => Promise<void>; onUploadChange: (event: ChangeEvent<HTMLInputElement>) => void; mediaUploading: boolean;
   startDate: string; setStartDate: (value: string) => void; endDate: string; setEndDate: (value: string) => void; frequency: string; setFrequency: (value: string) => void; customDays: number[]; setCustomDays: React.Dispatch<React.SetStateAction<number[]>>; time: string; setTime: (value: string) => void;
-  accounts: SocialAccount[]; connectedAccounts: ConnectedSocialAccount[]; selectedAccounts: string[]; toggleAccount: (id: string) => void; facebookPages: ConnectedSocialAccount[]; facebookPagesError: string; facebookPublisherEnabled: boolean; selectedFacebookPageId: string; setSelectedFacebookPageId: (id: string) => void; preview: Array<{ id: string; mediaId: string; mediaName: string; mediaKind: "image" | "video"; mediaUrl: string; date: string; time: string; platform: string[]; caption: string }>;
+  accounts: SocialAccount[]; channelOptions: ChannelOption[]; selectedAccounts: string[]; toggleAccount: (id: string) => void; facebookPublisherEnabled: boolean; preview: Array<{ id: string; mediaId: string; mediaName: string; mediaKind: "image" | "video"; mediaUrl: string; date: string; time: string; platform: string[]; caption: string }>;
   expectedCount: number; onSave: () => void; saveDisabled: boolean; saving: boolean; onMove: (source: number, target: number) => void; onRemovePreview: (mediaId: string) => void; onCaptionChange: (id: string, caption: string) => void; onDragStart: (event: DragEvent<HTMLElement>, index: number) => void; draggedPost: number | null; blocked: boolean; setNotice: (value: string) => void;
 };
 
@@ -649,7 +533,7 @@ function BulkSchedule(props: BulkProps) {
 
     <section className="panel schedule-panel"><div className="panel-heading"><div><div className="step-label"><span>02</span> FIND YOUR RHYTHM</div><h2>Set your schedule</h2><p>One post a day, a few a week — whatever works for you.</p></div><span className="panel-spark">✳</span></div><div className="schedule-fields"><label className="field-wrap"><span>START DATE</span><span className="input-with-icon"><Icon name="calendar" size={16} /><input type="date" value={props.startDate} onChange={(event) => props.setStartDate(event.target.value)} /></span></label><label className="field-wrap"><span>END DATE <em>OPTIONAL</em></span><span className="input-with-icon"><Icon name="calendar" size={16} /><input type="date" value={props.endDate} min={props.startDate} onChange={(event) => props.setEndDate(event.target.value)} /></span></label><label className="field-wrap frequency-field"><span>HOW OFTEN?</span><span className="input-with-icon"><Icon name="clock" size={16} /><select value={props.frequency} onChange={(event) => props.setFrequency(event.target.value)}><option value="daily">Every day · 1 post a day</option><option value="three-weekly">Three times a week · Mon, Wed, Fri</option><option value="custom">Pick my own days</option></select><Icon name="down" size={15} /></span></label><label className="field-wrap"><span>POST AT</span><span className="input-with-icon"><Icon name="clock" size={16} /><input type="time" value={props.time} onChange={(event) => props.setTime(event.target.value)} /></span></label></div>{props.frequency === "custom" && <div className="custom-days"><span>PICK YOUR DAYS</span>{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, index) => <button key={day} className={props.customDays.includes(index) ? "weekday-selected" : ""} onClick={() => toggleDay(index)}>{day}</button>)}</div>}{!props.endDate && <div className="date-range-hint"><Icon name="clock" size={14} /> No end date? We’ll plan the next 30 days, and use the content you’ve added.</div>}</section>
 
-    <section className="panel account-panel"><div className="panel-heading"><div><div className="step-label"><span>03</span> WHERE IT ALL GOES</div><h2>Choose your channels</h2><p>Your post will show up on every channel you pick.</p></div><span className="account-count">{props.selectedAccounts.length} SELECTED</span></div><div className="account-choices">{props.accounts.map((account) => <button key={account.id} aria-pressed={props.selectedAccounts.includes(account.id)} onClick={() => props.toggleAccount(account.id)} className={`account-chip ${props.selectedAccounts.includes(account.id) ? "account-chip-selected" : ""}`}><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span className="account-chip-label"><b>{account.label}</b><small>{channelStatus(account.id, props.connectedAccounts)}</small></span><span className="account-check">{props.selectedAccounts.includes(account.id) ? "✓" : ""}</span></button>)}<Link href="/accounts" className="manage-accounts">Manage connections ↗</Link></div>{props.selectedAccounts.includes("facebook") && <div className="facebook-page-picker"><label className="field-wrap"><span>POST THIS TO FACEBOOK PAGE</span><span className="input-with-icon"><Icon name="share" size={15} /><select value={props.selectedFacebookPageId} onChange={(event) => props.setSelectedFacebookPageId(event.target.value)}><option value="">Choose a connected Page</option>{props.facebookPages.map((page) => <option key={page.id} value={page.id}>{page.account_name}</option>)}</select><Icon name="down" size={15} /></span></label>{props.facebookPagesError ? <p className="facebook-page-help" role="alert">{props.facebookPagesError}</p> : props.facebookPages.length === 0 ? <p className="facebook-page-help">No connected Facebook Pages found. Connect a Page in <Link href="/accounts">Social accounts</Link> first.</p> : <p className="facebook-page-help">{props.facebookPublisherEnabled ? "Uploaded images will publish to this Page at the scheduled time." : "Choose the Page. Automatic publishing is turned off on this server, so posts are saved to the calendar only."} Facebook scheduling currently supports images.</p>}</div>}</section></div>
+    <section className="panel account-panel"><div className="panel-heading"><div><div className="step-label"><span>03</span> WHERE IT ALL GOES</div><h2>Choose your channels</h2><p>Your post will show up on every channel you pick.</p></div><span className="account-count">{props.selectedAccounts.length} SELECTED</span></div><div className="account-choices">{props.channelOptions.map((option) => { const meta = props.accounts.find((item) => item.id === option.platform); const on = props.selectedAccounts.includes(option.id); return <button key={option.id} aria-pressed={on} onClick={() => props.toggleAccount(option.id)} className={`account-chip ${on ? "account-chip-selected" : ""}`}><span className="account-icon" style={{ "--account-color": meta?.color } as React.CSSProperties}>{meta?.icon ?? "•"}</span><span className="account-chip-label"><b>{option.label}</b><small>{option.note}</small></span><span className="account-check">{on ? "✓" : ""}</span></button>; })}<Link href="/accounts" className="manage-accounts">Manage connections ↗</Link></div><p className="facebook-page-help">{props.facebookPublisherEnabled ? "Posts to connected accounts publish automatically at the scheduled time." : "Automatic publishing is turned off on this server; posts are saved to the calendar."} Platform rules, such as Instagram image shapes, are checked when you schedule.</p></section></div>
 
     <aside className="scheduler-preview"><div className="preview-heading"><div><span className="preview-stars">✳</span><h2>Your schedule</h2></div><span className="preview-live"><i /> LIVE PREVIEW</span></div><div className="preview-subheading"><span>YOUR CONTENT, FINDING ITS PLACE</span><span>{props.preview.length} POSTS</span></div><div className="preview-warning">✦ Need caption ideas? <Link href="/ai-captions">Generate platform-specific drafts</Link>, then paste them below.</div>{props.blocked && <div className="schedule-warning"><span>⚠</span><div><b>There’s a little overlap.</b><p>One of these channels already has a post planned for the same time. Tweak the time or edit your other schedule.</p></div></div>}{insufficientContent && <div className="schedule-warning shortage-warning"><span>i</span><div><b>Your content will cover part of this schedule.</b><p>There are more time slots than uploaded items. Add more content, or preview a shorter schedule with what you have.</p></div></div>}{props.media.length > 0 && props.preview.length === 0 && <div className="schedule-warning shortage-warning"><span>i</span><div><b>No posting days in this date range.</b><p>Choose at least one posting day and check the start and end dates.</p></div></div>}<div className="post-preview-list">{props.preview.map((post, index) => <article key={post.id} className={`post-preview-card ${props.draggedPost === index ? "post-dragging" : ""}`} draggable onDragStart={(event) => props.onDragStart(event, index)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); if (props.draggedPost !== null && props.draggedPost !== index) props.onMove(props.draggedPost, index); }}><div className="preview-post-top"><span className="drag-grip" title="Drag to change the order">⠿</span><span className="preview-date">{friendlyDate(post.date)} <span>·</span> {post.time}</span><button title="Remove this post" aria-label={`Remove ${post.mediaName}`} className="remove-preview" onClick={() => props.setNotice("To leave out a post, uncheck its content thumbnail above.")}><Icon name="close" size={14} /></button></div><div className="preview-post-media"><div className="preview-thumb">{post.mediaKind === "image" ? <Image src={post.mediaUrl} alt={post.mediaName} fill sizes="120px" unoptimized /> : <video src={post.mediaUrl} muted aria-label={post.mediaName} />}</div><div className="preview-caption-info"><b>{post.mediaName}</b><span>{post.mediaKind === "video" ? "Video" : "Photo"}</span></div><span className="platform-icons">{post.platform.map((id) => { const account = props.accounts.find((item) => item.id === id); return account ? <i key={id} title={account.label} style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</i> : null; })}</span></div><label className="caption-edit-label" htmlFor={`caption-${post.id}`}>YOUR CAPTION <span>✎ EDIT</span></label><textarea id={`caption-${post.id}`} className="caption-edit" placeholder="Write a caption for this post…" maxLength={5000} value={post.caption} onChange={(event) => props.onCaptionChange(post.id, event.target.value)} /></article>)}{props.preview.length === 0 && <div className="preview-empty"><span className="preview-empty-icon">✳</span><b>Your posts will pop up here.</b><p>Pick a few photos, videos, or your days to post. There’s no wrong place to start.</p><span className="empty-arrow">↖ start by adding your content</span></div>}</div>{props.preview.length > 0 && <div className="preview-footer"><span>✳ {props.selected.length} {props.selected.length === 1 ? "post" : "posts"} ready to go</span><span className="preview-footer-note">Drag to reorder <span>⠿</span></span></div>}<button className="button button-primary schedule-submit" disabled={!props.preview.length || props.selectedAccounts.length === 0 || props.blocked || props.saveDisabled} onClick={props.onSave}><Icon name="calendar" size={17} /> {props.saving ? "Saving…" : <>Schedule {props.preview.length || ""} {props.preview.length === 1 ? "post" : "posts"} <span>↗</span></>}</button><p className="schedule-disclaimer">Take one last look before scheduling. You can always edit your posts later.</p></aside></div></>;
 }
@@ -675,7 +559,7 @@ function SectionContent({ section, sectionName, currentUser, connectedAccounts, 
   const [passwordChangeError, setPasswordChangeError] = useState(false);
   const today = todayString();
   const upcoming = posts.filter((post) => post.date >= today && post.publishStatus === "scheduled").sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-  const statusCounts = { scheduled: 0, publishing: 0, published: 0, failed: 0 };
+  const statusCounts = { draft: 0, review: 0, scheduled: 0, publishing: 0, published: 0, failed: 0 };
   for (const post of posts) statusCounts[post.publishStatus] += 1;
   const connectedPlatforms = accounts.filter((account) => connectedAccounts.some((connected) => connected.platform === account.id));
   const now = new Date();

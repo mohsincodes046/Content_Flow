@@ -918,3 +918,74 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
   .welcome-link { align-self: flex-end; margin-left: 0; }
   .overview-welcome { flex-wrap: wrap; }
 }
+
+/* Posts, editor and review queue */
+.button-danger { min-height: 40px; padding: 0 15px; border: 1px solid #F8717166; border-radius: 8px; background: transparent; color: #F87171; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+.button-danger:disabled { opacity: .5; cursor: not-allowed; }
+.pending-tag.status-draft > i, .pending-tag.status-review > i { background: #A78BFA; }
+.calendar-post-chip.chip-draft { border-style: dashed; color: #A1A1AA; }
+.calendar-post-chip.chip-review { border-color: #A78BFA88; }
+.compose-layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, .9fr); gap: 13px; align-items: start; }
+.compose-main, .compose-side { padding: 16px; display: grid; gap: 14px; }
+.compose-field { display: grid; gap: 6px; }
+.compose-field > span { display: flex; justify-content: space-between; color: #A1A1AA; font-size: 10px; font-weight: 700; letter-spacing: .6px; }
+.compose-field input, .compose-field textarea, .compose-field select, .compose-side textarea, .compose-target textarea, .compose-ai input, .compose-comment input, .review-card textarea {
+  width: 100%; padding: 9px 10px; border: 1px solid #273044; border-radius: 7px; background: #0B0F19; color: #E4E4E7; font: inherit; font-size: 13px; }
+.compose-note { margin: 0; padding: 9px 10px; border: 1px solid #A78BFA55; border-radius: 7px; background: #151C2C; color: #C4B5FD; font-size: 12px; }
+.compose-ai { display: flex; gap: 8px; }
+.compose-ai input { flex: 1; }
+.compose-media { display: flex; flex-wrap: wrap; gap: 8px; }
+.compose-media-item { position: relative; }
+.compose-thumb { display: block; border-radius: 7px; object-fit: cover; border: 1px solid #273044; background: #0B0F19; }
+.compose-media-actions { position: absolute; top: 3px; right: 3px; display: flex; gap: 2px; }
+.compose-media-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: #000a; color: #fff; font-size: 11px; cursor: pointer; }
+.compose-add { width: 72px; height: 72px; display: grid; place-items: center; border: 1px dashed #273044; border-radius: 7px; background: transparent; color: #A78BFA; font: inherit; font-size: 11px; cursor: pointer; text-align: center; }
+.compose-library { max-height: 260px; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; padding: 8px; border: 1px solid #273044; border-radius: 8px; }
+.library-pick { display: grid; gap: 3px; padding: 4px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #A1A1AA; font: inherit; font-size: 10px; cursor: pointer; overflow: hidden; }
+.library-pick small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-picked { border-color: #A78BFA; background: #151C2C; }
+.compose-target { display: grid; gap: 6px; padding: 9px; border: 1px solid #273044; border-radius: 8px; background: #111827; }
+.compose-target-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; cursor: pointer; }
+.compose-target-row small { color: #A1A1AA; font-size: 11px; }
+.compose-target-row small:last-child { margin-left: auto; }
+.compose-custom { color: #A1A1AA; font-size: 11px; }
+.compose-issues { padding: 10px; border: 1px solid #F8717166; border-radius: 8px; background: #F871710f; color: #FCA5A5; font-size: 12px; }
+.compose-issues ul { margin: 6px 0 0; padding-left: 18px; }
+.compose-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.compose-status, .compose-history { display: grid; gap: 8px; }
+.compose-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 0; border-top: 1px solid #273044; font-size: 12px; }
+.compose-status-row a { color: #A78BFA; }
+.compose-status-row .publish-error-text { padding-left: 0; }
+.compose-history > div { font-size: 12px; }
+.compose-history small, .review-history small { color: #71717A; }
+.compose-history p, .review-history p { margin: 2px 0 0; color: #A1A1AA; }
+.posts-panel { padding: 16px; display: grid; gap: 10px; }
+.posts-list { display: grid; gap: 6px; }
+.post-row { display: flex; align-items: center; gap: 10px; padding: 9px; border: 1px solid #273044; border-radius: 8px; background: #111827; }
+.post-row:hover { border-color: #A78BFA66; }
+.post-row-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.post-row-text b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.post-row-text small { color: #A1A1AA; font-size: 11px; }
+.post-row-text .publish-error-text { padding-left: 0; }
+.post-thumb { width: 44px; height: 44px; flex-shrink: 0; border-radius: 7px; object-fit: cover; }
+.post-thumb-text { display: grid; place-items: center; border: 1px solid #273044; background: #151C2C; color: #A78BFA; }
+.post-status { padding: 3px 8px; border-radius: 999px; background: #151C2C; color: #A1A1AA; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.post-status-in_review, .post-status-approved { color: #C4B5FD; }
+.post-status-scheduled { color: #93C5FD; }
+.post-status-publishing, .post-status-changes_requested { color: #F59E0B; }
+.post-status-published { color: #22C55E; }
+.post-status-failed, .post-status-rejected { color: #F87171; }
+.post-status-partially_published { color: #FBBF24; }
+.review-queue { display: grid; gap: 12px; }
+.review-card { padding: 14px; display: grid; gap: 10px; }
+.review-card-head { display: flex; justify-content: space-between; gap: 10px; }
+.review-card-head div { display: grid; gap: 2px; }
+.review-card-head small { color: #A1A1AA; font-size: 11px; }
+.review-media { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-media img, .review-media video { max-width: 220px; max-height: 220px; border-radius: 8px; border: 1px solid #273044; object-fit: cover; }
+.review-version { padding: 9px; border: 1px solid #273044; border-radius: 8px; background: #111827; }
+.review-version p { margin: 4px 0 0; white-space: pre-wrap; font-size: 13px; }
+.review-history { display: grid; gap: 6px; font-size: 12px; }
+.review-subhead { margin: 8px 0 0; color: #A1A1AA; font-size: 13px; font-weight: 600; }
+@media (max-width: 900px) { .compose-layout { grid-template-columns: 1fr; } }
+.compose-field input[type="checkbox"], .compose-target input[type="checkbox"] { width: auto; padding: 0; accent-color: #8B5CF6; }
