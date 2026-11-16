@@ -1200,3 +1200,69 @@ def test_submission_requires_existing_asset(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
+
+
+def _signed_webhook(client: TestClient, body: bytes, secret: str, signature: str = "") -> httpx.Response:
+    import hashlib
+    import hmac
+
+    header = signature or "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return client.post(
+        "/api/social/webhook",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": header},
+    )
+
+
+def test_webhook_is_closed_until_a_verify_token_is_configured(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("META_WEBHOOK_VERIFY_TOKEN", raising=False)
+    verify = client.get(
+        "/api/social/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "insta_hook_99", "hub.challenge": "42"},
+    )
+    receive = client.post("/api/social/webhook", json={"object": "page"})
+
+    assert verify.status_code == 503
+    assert receive.status_code == 503
+
+
+def test_webhook_verification_uses_configured_token(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_WEBHOOK_VERIFY_TOKEN", "configured-verify-token")
+    params = {"hub.mode": "subscribe", "hub.challenge": "challenge-123"}
+
+    accepted = client.get("/api/social/webhook", params={**params, "hub.verify_token": "configured-verify-token"})
+    rejected = client.get("/api/social/webhook", params={**params, "hub.verify_token": "insta_hook_99"})
+
+    assert accepted.status_code == 200
+    assert accepted.text == "challenge-123"
+    assert rejected.status_code == 403
+
+
+def test_webhook_events_require_a_valid_meta_signature(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_WEBHOOK_VERIFY_TOKEN", "configured-verify-token")
+    monkeypatch.setenv("META_APP_SECRET", "test-app-secret")
+    body = b'{"object":"page","entry":[{"id":"1"}]}'
+
+    valid = _signed_webhook(client, body, "test-app-secret")
+    wrong_secret = _signed_webhook(client, body, "another-secret")
+    missing = client.post("/api/social/webhook", content=body, headers={"Content-Type": "application/json"})
+    tampered = _signed_webhook(
+        client,
+        b'{"object":"page","entry":[]}',
+        "test-app-secret",
+        signature=valid.request.headers["X-Hub-Signature-256"],
+    )
+
+    assert valid.status_code == 200
+    assert wrong_secret.status_code == 401
+    assert missing.status_code == 401
+    assert tampered.status_code == 401
