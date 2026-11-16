@@ -25,6 +25,28 @@ The frontend calls this local API by default. If the API runs at a different
 address, copy `frontend\.env.example` to `frontend\.env.local`, set
 `NEXT_PUBLIC_CONTENT_FLOW_API_URL` to that address, and restart the frontend.
 
+Run the tests with `pip install -r requirements-dev.txt` and `python -m pytest`.
+
+## Code layout and logging
+
+| Module | Responsibility |
+|---|---|
+| `app/main.py` | App setup: lifespan, middleware, router registration |
+| `app/config.py` | Environment loading, paths, settings helpers |
+| `app/database.py` | SQLite connection and schema migrations |
+| `app/schemas.py` | Request and response models |
+| `app/security.py` | Sessions, token encryption, rate limiting |
+| `app/publisher.py` | Background scheduled-post publisher |
+| `app/ai.py` | AI provider calls |
+| `app/social_oauth.py` | Meta OAuth and Graph API calls |
+| `app/observability.py` | Logging setup and request IDs |
+| `app/routers/` | HTTP endpoints, one module per area |
+
+Application logs go to stderr with a request ID on every line. Set
+`CONTENT_FLOW_LOG_LEVEL` (default `INFO`) to change the level. Every response
+carries an `X-Request-ID` header, and unexpected errors return a JSON 500 that
+includes the same ID, so a user-reported error can be matched to the log.
+
 ## AI captions
 
 The authenticated `POST /api/ai/captions` endpoint generates a separate caption

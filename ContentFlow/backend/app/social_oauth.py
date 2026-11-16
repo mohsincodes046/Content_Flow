@@ -8,7 +8,6 @@ from urllib.parse import urlencode
 
 import httpx
 
-
 META_GRAPH_VERSION = "v25.0"
 
 PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
@@ -28,6 +27,24 @@ PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
 
 class MetaAPIError(ValueError):
     """A Graph API request failed; the message is safe to show to the user."""
+
+
+def graph_error_summary(response: httpx.Response) -> str:
+    """Describe a failed Graph API response for logs without echoing the request.
+
+    Meta's OAuth requests carry the app secret and authorization code in the URL,
+    and httpx includes the URL in its exception text, so log this instead.
+    """
+    try:
+        error = response.json().get("error")
+    except ValueError:
+        error = None
+    if not isinstance(error, dict):
+        return f"HTTP {response.status_code}"
+    return (
+        f"HTTP {response.status_code}: {error.get('message')} "
+        f"(type={error.get('type')}, code={error.get('code')}, subcode={error.get('error_subcode')})"
+    )
 
 
 def _meta_error_message(response: httpx.Response) -> str:

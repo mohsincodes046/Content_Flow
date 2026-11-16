@@ -7,20 +7,19 @@ from pathlib import Path
 
 import httpx
 import pytest
-import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from urllib.parse import parse_qs, urlparse
 
-from app import main
+from app import ai as ai_service, config, database, main, publisher, security, social_oauth
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     data_dir = tmp_path / "data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
     with TestClient(main.app) as test_client:
         register_response = test_client.post(
             "/api/auth/register",
@@ -37,9 +36,9 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 def test_protected_content_api_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data_dir = tmp_path / "unauthenticated-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as unauthenticated_client:
         response = unauthenticated_client.get("/api/submissions")
@@ -54,9 +53,9 @@ def test_registration_creates_workspace_and_http_only_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_dir = tmp_path / "registration-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as registration_client:
         registered = registration_client.post(
@@ -310,9 +309,9 @@ def test_create_and_list_submission(client: TestClient) -> None:
 
 def test_caption_generation_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data_dir = tmp_path / "caption-unauthenticated-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as unauthenticated_client:
         response = unauthenticated_client.post(
@@ -325,9 +324,9 @@ def test_caption_generation_requires_login(tmp_path: Path, monkeypatch: pytest.M
 
 def test_social_provider_list_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data_dir = tmp_path / "social-unauthenticated-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as unauthenticated_client:
         response = unauthenticated_client.get("/api/social/providers")
@@ -382,7 +381,7 @@ def test_backend_environment_loads_env_file_without_overriding_process_values(
     monkeypatch.setenv("META_APP_ID", "process-app-id")
     monkeypatch.delenv("META_APP_SECRET", raising=False)
 
-    main.load_backend_environment(env_file)
+    config.load_backend_environment(env_file)
 
     assert os.environ["META_APP_ID"] == "process-app-id"
     assert os.environ["META_APP_SECRET"] == "file-app-secret"
@@ -445,8 +444,8 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
             },
         ]
 
-    monkeypatch.setattr(main.social_oauth, "exchange_authorization_code", fake_exchange)
-    monkeypatch.setattr(main.social_oauth, "retrieve_connected_accounts", fake_accounts)
+    monkeypatch.setattr(social_oauth, "exchange_authorization_code", fake_exchange)
+    monkeypatch.setattr(social_oauth, "retrieve_connected_accounts", fake_accounts)
 
     start = client.get("/api/social/oauth/meta/start", follow_redirects=False)
     state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
@@ -468,7 +467,7 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
     assert instagram["account_name"] == "contentflow.official"
     assert all("access_token" not in account for account in meta["accounts"])
 
-    with main.connect_database() as connection:
+    with database.connect_database() as connection:
         stored_tokens = connection.execute(
             "SELECT encrypted_tokens FROM social_accounts ORDER BY platform"
         ).fetchall()
@@ -537,16 +536,16 @@ def test_meta_exchange_uses_long_lived_token_for_facebook_page_discovery(
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handle_request)
     monkeypatch.setattr(
-        main.social_oauth.httpx,
+        social_oauth.httpx,
         "AsyncClient",
         lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
 
     async def connect_and_discover() -> tuple[dict[str, object], list[dict[str, object]]]:
-        token_data = await main.social_oauth.exchange_authorization_code(
+        token_data = await social_oauth.exchange_authorization_code(
             "meta", settings, "meta-auth-code", "https://contentflow.example.com/callback",
         )
-        discovered = await main.social_oauth.retrieve_connected_accounts("meta", token_data)
+        discovered = await social_oauth.retrieve_connected_accounts("meta", token_data)
         return token_data, discovered
 
     token_data, discovered_accounts = asyncio.run(connect_and_discover())
@@ -579,11 +578,11 @@ def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
 
     transport = httpx.MockTransport(handle_request)
     monkeypatch.setattr(
-        main.social_oauth.httpx,
+        social_oauth.httpx,
         "AsyncClient",
         lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
-    post_id = asyncio.run(main.social_oauth.publish_facebook_photo(
+    post_id = asyncio.run(social_oauth.publish_facebook_photo(
         "page-42",
         "page-token",
         image_path,
@@ -613,13 +612,13 @@ def test_facebook_photo_publisher_reports_meta_error_messages(
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(lambda request: httpx.Response(400, json={"error": graph_error}))
     monkeypatch.setattr(
-        main.social_oauth.httpx,
+        social_oauth.httpx,
         "AsyncClient",
         lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
 
-    with pytest.raises(main.social_oauth.MetaAPIError) as raised:
-        asyncio.run(main.social_oauth.publish_facebook_photo(
+    with pytest.raises(social_oauth.MetaAPIError) as raised:
+        asyncio.run(social_oauth.publish_facebook_photo(
             "page-42", "secret-page-token", image_path, "post.jpg", "image/jpeg", "Caption",
         ))
 
@@ -661,7 +660,7 @@ def test_caption_generation_returns_one_draft_per_platform(
             ']}'
         )
 
-    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
     response = client.post(
         "/api/ai/captions",
         json={
@@ -693,7 +692,7 @@ def test_claude_caption_generation_uses_configured_model_and_key(
         assert "instagram" in prompt
         return '{"posts":[{"platform":"instagram","caption":"A fresh start.","hashtags":["NewCourse"]}]}'
 
-    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
     response = client.post(
         "/api/ai/captions",
         json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
@@ -724,13 +723,13 @@ def test_claude_provider_sends_anthropic_messages_request(
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handle_request)
     monkeypatch.setattr(
-        main.httpx,
+        ai_service.httpx,
         "AsyncClient",
         lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
 
     response_text = asyncio.run(
-        main.call_caption_provider(
+        ai_service.call_caption_provider(
             "claude",
             "test-anthropic-key",
             "claude-sonnet-5-5",
@@ -783,7 +782,7 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
     encryption_key = Fernet.generate_key().decode("ascii")
     monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
     page_record_id = "connected-facebook-page"
-    with main.connect_database() as connection:
+    with database.connect_database() as connection:
         user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
         assert user is not None
         connection.execute(
@@ -829,7 +828,7 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
     assert scheduled_post["publish_status"] == "scheduled"
     assert scheduled_post["facebook_account_id"] == page_record_id
 
-    with main.connect_database() as connection:
+    with database.connect_database() as connection:
         connection.execute(
             "UPDATE scheduled_posts SET scheduled_date = '2020-01-01', scheduled_time = '00:00' WHERE id = ?",
             (scheduled_post["id"],),
@@ -851,8 +850,8 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
         published.append((page_id, caption, media_path.read_bytes(), filename))
         return "meta-post-123"
 
-    monkeypatch.setattr(main.social_oauth, "publish_facebook_photo", fake_publish)
-    asyncio.run(main.publish_due_scheduled_posts())
+    monkeypatch.setattr(social_oauth, "publish_facebook_photo", fake_publish)
+    asyncio.run(publisher.publish_due_scheduled_posts())
 
     refreshed = client.get("/api/scheduled-posts")
     assert refreshed.status_code == 200
@@ -866,7 +865,7 @@ def test_facebook_post_cannot_be_rescheduled_into_the_past(
 ) -> None:
     encryption_key = Fernet.generate_key().decode("ascii")
     monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
-    with main.connect_database() as connection:
+    with database.connect_database() as connection:
         user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
@@ -1308,7 +1307,7 @@ def test_ai_caption_daily_quota_counts_every_provider_call(
             raise httpx.ConnectError("provider unavailable")
         return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
 
-    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
     request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
 
     failed = client.post("/api/ai/captions", json=request)
@@ -1331,7 +1330,7 @@ def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.Mo
     async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
         return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
 
-    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
     request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
     assert client.post("/api/ai/captions", json=request).status_code == 200
     assert client.post("/api/ai/captions", json=request).status_code == 429
@@ -1358,6 +1357,94 @@ def test_client_ip_uses_render_proxy_address_only_on_render(monkeypatch: pytest.
     })
 
     monkeypatch.delenv("RENDER", raising=False)
-    assert main.client_ip(request) == "10.0.0.5"
+    assert security.client_ip(request) == "10.0.0.5"
     monkeypatch.setenv("RENDER", "true")
-    assert main.client_ip(request) == "203.0.113.9"
+    assert security.client_ip(request) == "203.0.113.9"
+
+
+@pytest.fixture()
+def app_logs(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
+    import logging
+
+    app_logger = logging.getLogger("app")
+    app_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="app")
+    try:
+        yield caplog
+    finally:
+        app_logger.removeHandler(caplog.handler)
+
+
+def test_oauth_failures_are_logged_without_secrets(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "super-secret-app-value")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+
+    async def failing_exchange(provider: str, settings: dict[str, str], code: str, redirect_uri: str) -> dict[str, object]:
+        request = httpx.Request(
+            "GET",
+            "https://graph.facebook.com/v25.0/oauth/access_token",
+            params={"client_secret": "super-secret-app-value", "code": "private-auth-code"},
+        )
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "Invalid verification code format.", "type": "OAuthException", "code": 100}},
+        )
+        response.raise_for_status()
+        return {}
+
+    monkeypatch.setattr(social_oauth, "exchange_authorization_code", failing_exchange)
+    start = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+
+    callback = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "private-auth-code"},
+        follow_redirects=False,
+    )
+
+    assert callback.headers["location"].endswith("/accounts?social=connect_failed")
+    assert "Invalid verification code format." in app_logs.text
+    assert "super-secret-app-value" not in app_logs.text
+    assert "private-auth-code" not in app_logs.text
+
+
+def test_responses_carry_a_request_id(client: TestClient) -> None:
+    generated = client.get("/api/health")
+    forwarded = client.get("/api/health", headers={"X-Request-ID": "trace-abc.123"})
+    unsafe = client.get("/api/health", headers={"X-Request-ID": "bad id\nwith newline"})
+
+    assert len(generated.headers["X-Request-ID"]) == 32
+    assert forwarded.headers["X-Request-ID"] == "trace-abc.123"
+    assert unsafe.headers["X-Request-ID"] != "bad id\nwith newline"
+
+
+def test_unhandled_errors_return_json_with_request_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs: pytest.LogCaptureFixture,
+) -> None:
+    from app.routers import submissions
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("database exploded")
+
+    monkeypatch.setattr(submissions, "connect_database", explode)
+    with TestClient(main.app, raise_server_exceptions=False) as raw_client:
+        raw_client.cookies.update(client.cookies)
+        response = raw_client.get(
+            "/api/submissions",
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
+    assert "database exploded" not in response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "database exploded" in app_logs.text
