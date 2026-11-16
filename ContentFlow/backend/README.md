@@ -82,6 +82,16 @@ Access may be required for accounts outside the app's roles. Instagram must be a
 professional account linked to a Facebook Page. Keep the App Secret and token
 encryption key in backend-only environment settings.
 
+Facebook Page photo publishing is supported for scheduled posts that have an
+uploaded image and an explicitly selected connected Page. To enable the
+background publisher for local development, set
+`CONTENT_FLOW_PUBLISHER_ENABLED=true` in `backend\.env`, then restart the API.
+Keep the API process running; it checks for due posts every
+`CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS` (60 seconds by default). Keep the
+publisher disabled until you are ready for scheduled Facebook posts to be
+published publicly. The current publisher supports images, not videos, and
+does not publish to Instagram or other platforms.
+
 The Meta connection endpoints are `GET /api/social/providers`,
 `GET /api/social/oauth/meta/start`,
 `GET /api/social/oauth/meta/callback`, and
@@ -104,10 +114,10 @@ Blueprint currently expects the frontend URL
 URL, update `CONTENT_FLOW_ALLOWED_ORIGINS` in the API service and redeploy it.
 The API URL is passed to the frontend by the Blueprint.
 
-This is deployment configuration only. Social OAuth, platform publishing,
-OAuth callback URLs, and the scheduled-post worker still need implementation
-before public posts can be connected or sent. Do not register provider callback
-URLs until those routes exist.
+The scheduler uses this API process and local SQLite/database storage, so keep
+the Render API at one instance. If deploying publicly, enable the publisher
+only after reviewing storage persistence, Meta permissions, and the publishing
+behavior for the target Page.
 
 Set `CONTENT_FLOW_DATA_DIR` to move the SQLite database and uploads out of
 `backend\data`. Set `CONTENT_FLOW_ALLOWED_ORIGINS` to a comma-separated list
@@ -152,12 +162,12 @@ active. Sessions use random HttpOnly cookies whose tokens are stored hashed,
 and submissions/uploads are scoped to the signed-in account. Signup and login
 are available to anyone who can reach this local development server.
 
-Scheduled-post records persist their media filename, caption, local date and
-time, and selected platforms. The bulk-schedule screen currently saves those
-details, not the selected media file itself; publishing and platform
-OAuth connection for Meta is implemented but requires a registered Meta app,
-credentials, and approved scopes. TikTok, LinkedIn, and YouTube OAuth, publishing
-to any platform, and the scheduled-post worker are not implemented. AI captions
+Scheduled posts persist their uploaded media, caption, local date and time,
+selected platforms, and selected Facebook Page. With the publisher enabled,
+Facebook Page image posts are sent when due; their status is visible in the
+schedule API. Other platforms remain calendar-only. TikTok, LinkedIn, and
+YouTube OAuth/publishing, Instagram publishing, Facebook video publishing, and
+automatic retries after publishing failures are not implemented. AI captions
 require a configured provider key.
 
 For HTTPS deployment, set `CONTENT_FLOW_COOKIE_SECURE=true` and configure

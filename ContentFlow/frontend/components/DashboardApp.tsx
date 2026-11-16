@@ -8,10 +8,21 @@ import Logo from "./Logo";
 import SubmissionWorkflow from "./SubmissionWorkflow";
 
 type MediaItem = { id: string; name: string; url: string; kind: "image" | "video" };
-type ScheduledPost = { id: string; mediaName: string; date: string; time: string; platform: string[]; caption: string };
+type ScheduledPost = {
+  id: string;
+  mediaName: string;
+  date: string;
+  time: string;
+  platform: string[];
+  caption: string;
+  assetId?: string | null;
+  facebookAccountId?: string | null;
+  publishStatus: "scheduled" | "publishing" | "published" | "failed";
+  publishError?: string | null;
+};
 type SocialAccount = { id: string; label: string; handle: string; color: string; icon: string };
-type ConnectedSocialAccount = { id: string; platform: string; account_name: string; account_type: string };
-type SocialProviderStatus = { provider: string; configured: boolean; accounts: ConnectedSocialAccount[] };
+type ConnectedSocialAccount = { id: string; account_id: string; platform: string; account_name: string; account_type: string };
+type SocialProviderStatus = { provider: string; configured: boolean; accounts: ConnectedSocialAccount[]; publisher_enabled: boolean };
 type DashboardUser = { id: string; email: string; full_name: string; workspace_name: string };
 
 const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -45,7 +56,6 @@ const demoMedia = [
   { name: "A little reminder.jpg", type: "photo", label: "✳", className: "tile-reminder" },
 ];
 
-const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 const localDate = (date: Date) => {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -54,6 +64,8 @@ const localDate = (date: Date) => {
 };
 const todayString = () => localDate(new Date());
 const supportedPlatforms = new Set(["instagram", "facebook", "linkedin", "youtube", "tiktok"]);
+const isPublishStatus = (value: unknown): value is ScheduledPost["publishStatus"] =>
+  value === "scheduled" || value === "publishing" || value === "published" || value === "failed";
 const sortScheduledPosts = (posts: ScheduledPost[]) => [...posts].sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
 const parseScheduledPosts = (value: unknown): ScheduledPost[] => {
   if (!Array.isArray(value)) throw new Error("The server returned an invalid schedule.");
@@ -73,7 +85,11 @@ const parseScheduledPosts = (value: unknown): ScheduledPost[] => {
       typeof item.caption !== "string" ||
       !("platforms" in item) ||
       !Array.isArray(item.platforms) ||
-      !item.platforms.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform))
+      !item.platforms.every((platform: unknown) => typeof platform === "string" && supportedPlatforms.has(platform)) ||
+      !("publish_status" in item) || !isPublishStatus(item.publish_status) ||
+      ("asset_id" in item && typeof item.asset_id !== "string" && item.asset_id !== null) ||
+      ("facebook_account_id" in item && typeof item.facebook_account_id !== "string" && item.facebook_account_id !== null) ||
+      ("publish_error" in item && typeof item.publish_error !== "string" && item.publish_error !== null)
     ) {
       throw new Error("The server returned an invalid scheduled post.");
     }
@@ -84,6 +100,10 @@ const parseScheduledPosts = (value: unknown): ScheduledPost[] => {
       time: item.time,
       platform: item.platforms,
       caption: item.caption,
+      assetId: "asset_id" in item && (typeof item.asset_id === "string" || item.asset_id === null) ? item.asset_id : null,
+      facebookAccountId: "facebook_account_id" in item && (typeof item.facebook_account_id === "string" || item.facebook_account_id === null) ? item.facebook_account_id : null,
+      publishStatus: item.publish_status,
+      publishError: "publish_error" in item && (typeof item.publish_error === "string" || item.publish_error === null) ? item.publish_error : null,
     };
   });
 };
@@ -117,6 +137,7 @@ const parseLegacyScheduledPosts = (saved: string): ScheduledPost[] => {
       time: item.time,
       platform: item.platform,
       caption: item.caption,
+      publishStatus: "scheduled",
     };
   });
 };
@@ -168,9 +189,14 @@ export default function DashboardApp({ section }: { section: string }) {
   const [postsReloadKey, setPostsReloadKey] = useState(0);
   const [scheduleMutationPending, setScheduleMutationPending] = useState(false);
   const [media, setMedia] = useState<MediaItem[]>([]);
+  const [mediaUploading, setMediaUploading] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [captionEdits, setCaptionEdits] = useState<Record<string, string>>({});
   const [selectedAccounts, setSelectedAccounts] = useState<string[]>(["instagram", "tiktok"]);
+  const [facebookPages, setFacebookPages] = useState<ConnectedSocialAccount[]>([]);
+  const [facebookPagesError, setFacebookPagesError] = useState("");
+  const [selectedFacebookPageId, setSelectedFacebookPageId] = useState("");
+  const [facebookPublisherEnabled, setFacebookPublisherEnabled] = useState(false);
   const [startDate, setStartDate] = useState(todayString);
   const [endDate, setEndDate] = useState("");
   const [frequency, setFrequency] = useState("daily");
@@ -210,6 +236,50 @@ export default function DashboardApp({ section }: { section: string }) {
       });
     return () => controller.abort();
   }, [router]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const controller = new AbortController();
+    async function loadFacebookPages() {
+      setFacebookPagesError("");
+      try {
+        const response = await fetch(`${apiUrl}/api/social/providers`, {
+          credentials: "include",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to load connected Facebook Pages"));
+        const result: unknown = await response.json();
+        if (!Array.isArray(result)) throw new Error("The server returned an invalid social provider list.");
+        const meta = result.find((item): item is SocialProviderStatus =>
+          typeof item === "object" && item !== null
+          && "provider" in item && item.provider === "meta"
+          && "configured" in item && typeof item.configured === "boolean"
+          && "publisher_enabled" in item && typeof item.publisher_enabled === "boolean"
+          && "accounts" in item && Array.isArray(item.accounts),
+        );
+        if (!meta) throw new Error("The server did not return Meta connection status.");
+        setFacebookPublisherEnabled(meta.publisher_enabled);
+        const pages = meta.accounts.filter((account): account is ConnectedSocialAccount =>
+          typeof account === "object" && account !== null
+          && "id" in account && typeof account.id === "string"
+          && "account_id" in account && typeof account.account_id === "string"
+          && "platform" in account && account.platform === "facebook"
+          && "account_name" in account && typeof account.account_name === "string"
+          && "account_type" in account && typeof account.account_type === "string",
+        );
+        setFacebookPages(pages);
+        setSelectedFacebookPageId((current) =>
+          pages.some((page) => page.id === current) ? current : pages.length === 1 ? pages[0].id : "",
+        );
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error("Unable to load connected Facebook Pages.", error);
+        setFacebookPagesError(error instanceof Error ? error.message : "Unable to load connected Facebook Pages.");
+      }
+    }
+    void loadFacebookPages();
+    return () => controller.abort();
+  }, [currentUser]);
 
   useEffect(() => {
     const userId = currentUser?.id;
@@ -301,19 +371,49 @@ export default function DashboardApp({ section }: { section: string }) {
     setSelected((current) => current.filter((entry) => entry !== id));
   }, [media]);
 
-  const uploadFiles = useCallback((files: FileList | File[]) => {
+  const uploadFiles = useCallback(async (files: FileList | File[]) => {
     const accepted = Array.from(files).filter((file) => (file.type.startsWith("image/") || file.type.startsWith("video/")) && file.size <= 50 * 1024 * 1024);
     if (accepted.length !== files.length) setNotice("A few files were skipped. Choose image or video files under 50 MB each.");
-    if (accepted.length) {
-      const added = accepted.map((file) => ({ id: makeId(), name: file.name, url: URL.createObjectURL(file), kind: file.type.startsWith("video/") ? "video" as const : "image" as const }));
-      setMedia((current) => [...current, ...added]);
-      setSelected((current) => [...current, ...added.map((item) => item.id)]);
+    if (!accepted.length) return;
+    setMediaUploading(true);
+    try {
+      for (const file of accepted) {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch(`${apiUrl}/api/assets`, {
+          method: "POST",
+          credentials: "include",
+          body: formData,
+        });
+        if (!response.ok) throw new Error(await apiErrorMessage(response, `Unable to upload ${file.name}`));
+        const uploaded: unknown = await response.json();
+        if (
+          typeof uploaded !== "object" || uploaded === null ||
+          !("id" in uploaded) || typeof uploaded.id !== "string" ||
+          !("filename" in uploaded) || typeof uploaded.filename !== "string"
+        ) {
+          throw new Error("The server returned an invalid uploaded asset.");
+        }
+        const item = {
+          id: uploaded.id,
+          name: uploaded.filename,
+          url: URL.createObjectURL(file),
+          kind: file.type.startsWith("video/") ? "video" as const : "image" as const,
+        };
+        setMedia((current) => [...current, item]);
+        setSelected((current) => [...current, item.id]);
+      }
       if (accepted.length === files.length) setNotice("");
+    } catch (error) {
+      console.error("Unable to upload content to the Content-Flow API.", error);
+      setNotice(error instanceof Error ? error.message : "Unable to upload content. Please try again.");
+    } finally {
+      setMediaUploading(false);
     }
-  }, []);
+  }, [setNotice]);
 
   const onUploadChange = (event: ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files?.length) uploadFiles(event.target.files);
+    if (event.target.files?.length) void uploadFiles(event.target.files);
     event.target.value = "";
   };
 
@@ -358,12 +458,26 @@ export default function DashboardApp({ section }: { section: string }) {
   const sectionName = navigation.find((item) => item.href === `/${section}`)?.label ?? "Overview";
   const title = section === "bulk-schedule" ? "Bulk schedule" : sectionName;
   async function saveSchedule() {
+    if (mediaUploading) {
+      setNotice("Wait for the uploads to finish before scheduling.");
+      return;
+    }
     if (postsLoading || postsLoadError) {
       setNotice(postsLoadError || "Your saved schedule is still loading. Try again in a moment.");
       return;
     }
     if (preview.length === 0 || selectedAccounts.length === 0) {
       setNotice(selectedAccounts.length === 0 ? "Choose at least one social account before scheduling." : "Add some photos or videos first, then your schedule is ready.");
+      return;
+    }
+    if (selectedAccounts.includes("facebook") && !selectedFacebookPageId) {
+      setNotice(facebookPages.length
+        ? "Choose the Facebook Page that should receive this post."
+        : "Connect a Facebook Page first on the Social accounts page.");
+      return;
+    }
+    if (selectedAccounts.includes("facebook") && preview.some((post) => post.mediaKind !== "image")) {
+      setNotice("Facebook scheduled publishing currently supports images only. Remove video posts or deselect Facebook.");
       return;
     }
     if (blocked) {
@@ -384,6 +498,9 @@ export default function DashboardApp({ section }: { section: string }) {
             time: post.time,
             platforms: post.platform,
             caption: post.caption,
+            asset_id: post.mediaId,
+            facebook_account_id: post.platform.includes("facebook") ? selectedFacebookPageId : null,
+            timezone_offset_minutes: new Date().getTimezoneOffset(),
           })),
         }),
       });
@@ -393,7 +510,12 @@ export default function DashboardApp({ section }: { section: string }) {
         ...current,
         ...savedPosts.filter((saved) => !current.some((post) => post.id === saved.id)),
       ]));
-      setNotice(`${savedPosts.length} ${savedPosts.length === 1 ? "post is" : "posts are"} on the calendar. Schedule details are saved; media files and publishing are not connected yet.`);
+      const includesFacebook = preview.some((post) => post.platform.includes("facebook"));
+      setNotice(includesFacebook && facebookPublisherEnabled
+        ? `${savedPosts.length} ${savedPosts.length === 1 ? "post is" : "posts are"} scheduled for ${facebookPages.find((page) => page.id === selectedFacebookPageId)?.account_name}. Facebook will publish them at the selected time.`
+        : includesFacebook
+          ? `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} saved to the calendar. To publish automatically, set CONTENT_FLOW_PUBLISHER_ENABLED=true in backend/.env and restart the API.`
+          : `${savedPosts.length} post${savedPosts.length === 1 ? "" : "s"} saved to the calendar. Automatic publishing is currently implemented for Facebook Page image posts only.`);
     } catch (error) {
       console.error("Unable to save scheduled posts.", error);
       setNotice(error instanceof Error ? error.message : "Your schedule couldn't be saved. Please try again.");
@@ -483,13 +605,13 @@ export default function DashboardApp({ section }: { section: string }) {
     return <main className="auth-check-screen"><Logo /><h1>Dashboard sign-in required</h1><p>{authError || "Sign in to continue to your workspace."}</p><Link className="button button-primary" href="/login">Sign in</Link></main>;
   }
 
-  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>{workspaceName}</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><button aria-label="Search your workspace" className="icon-button search-button" onClick={() => setNotice("Workspace search is ready when you have more content to explore.")}><Icon name="search" /></button><div className="notification-wrap"><button aria-label="Notifications" className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" /><i /></button>{showNotifications && <div className="notification-popover"><b>You’re all caught up ✨</b><p>New post activity and account updates will show up here.</p><Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><button type="button" className="topbar-avatar" onClick={handleLogout} aria-label="Sign out of Content-Flow">{initials}</button></div></header><div className="page-content">{postsLoading && <p className="schedule-state" role="status">Loading your saved schedule…</p>}{postsLoadError && <div className="schedule-load-error" role="alert"><span>{postsLoadError}</span><button type="button" onClick={() => setPostsReloadKey((current) => current + 1)}>Try again</button></div>}{section === "create-post" || section === "review-queue" ? <SubmissionWorkflow view={section === "create-post" ? "submit" : "review"} setNotice={setNotice} /> : section === "bulk-schedule" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} saveDisabled={postsLoading || Boolean(postsLoadError) || scheduleMutationPending} saving={scheduleMutationPending} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span><span>Preview workspace · Sample data</span></footer></div></main></div>;
+  return <div className="app-layout"><div className={`sidebar-backdrop ${mobileOpen ? "backdrop-visible" : ""}`} onClick={() => setMobileOpen(false)} /><aside className={`app-sidebar ${mobileOpen ? "sidebar-open" : ""}`}>{navContent}</aside><main className="dashboard-main"><header className="topbar"><div className="topbar-left"><button aria-label="Open navigation" className="mobile-menu-button" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button><div className="breadcrumb"><span>{workspaceName}</span><span className="crumb-separator">/</span><b>{title}</b></div></div><div className="topbar-right"><button aria-label="Search your workspace" className="icon-button search-button" onClick={() => setNotice("Workspace search is ready when you have more content to explore.")}><Icon name="search" /></button><div className="notification-wrap"><button aria-label="Notifications" className={`icon-button notification-button ${showNotifications ? "icon-selected" : ""}`} onClick={() => setShowNotifications(!showNotifications)}><Icon name="bell" /><i /></button>{showNotifications && <div className="notification-popover"><b>You’re all caught up ✨</b><p>New post activity and account updates will show up here.</p><Link href="/calendar" onClick={() => setShowNotifications(false)}>See your calendar <span>↗</span></Link></div>}</div><span className="topbar-divider" /><button type="button" className="topbar-avatar" onClick={handleLogout} aria-label="Sign out of Content-Flow">{initials}</button></div></header><div className="page-content">{postsLoading && <p className="schedule-state" role="status">Loading your saved schedule…</p>}{postsLoadError && <div className="schedule-load-error" role="alert"><span>{postsLoadError}</span><button type="button" onClick={() => setPostsReloadKey((current) => current + 1)}>Try again</button></div>}{section === "create-post" || section === "review-queue" ? <SubmissionWorkflow view={section === "create-post" ? "submit" : "review"} setNotice={setNotice} /> : section === "bulk-schedule" ? <BulkSchedule section={section} media={media} selected={selected} setSelected={setSelected} onFilesDrop={uploadFiles} onUploadChange={onUploadChange} mediaUploading={mediaUploading} startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} frequency={frequency} setFrequency={setFrequency} customDays={customDays} setCustomDays={setCustomDays} time={time} setTime={setTime} accounts={accounts} selectedAccounts={selectedAccounts} toggleAccount={toggleAccount} facebookPages={facebookPages} facebookPagesError={facebookPagesError} facebookPublisherEnabled={facebookPublisherEnabled} selectedFacebookPageId={selectedFacebookPageId} setSelectedFacebookPageId={setSelectedFacebookPageId} preview={preview} expectedCount={expectedCount} onSave={saveSchedule} saveDisabled={postsLoading || Boolean(postsLoadError) || scheduleMutationPending || mediaUploading} saving={scheduleMutationPending} onMove={movePost} onRemovePreview={(id) => setSelected((current) => current.filter((item) => item !== id))} onCaptionChange={updateCaption} onDragStart={handleDragStart} draggedPost={draggedPost} blocked={blocked} setNotice={setNotice} /> : <SectionContent section={section} sectionName={sectionName} posts={posts} media={media} onUploadChange={onUploadChange} onRemoveMedia={removeMedia} accounts={accounts} onRemove={removePost} onReschedule={reschedulePost} setNotice={setNotice} />}<div className={`toast-notice ${notice ? "toast-show" : ""}`} role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice("")}><Icon name="close" size={15} /></button></div><footer className="app-footer"><span>Made for what you make. <span className="footer-spark">✳</span></span><span>Preview workspace · Sample data</span></footer></div></main></div>;
 }
 
 type BulkProps = {
-  section: string; media: MediaItem[]; selected: string[]; setSelected: React.Dispatch<React.SetStateAction<string[]>>; onFilesDrop: (files: FileList | File[]) => void; onUploadChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  section: string; media: MediaItem[]; selected: string[]; setSelected: React.Dispatch<React.SetStateAction<string[]>>; onFilesDrop: (files: FileList | File[]) => Promise<void>; onUploadChange: (event: ChangeEvent<HTMLInputElement>) => void; mediaUploading: boolean;
   startDate: string; setStartDate: (value: string) => void; endDate: string; setEndDate: (value: string) => void; frequency: string; setFrequency: (value: string) => void; customDays: number[]; setCustomDays: React.Dispatch<React.SetStateAction<number[]>>; time: string; setTime: (value: string) => void;
-  accounts: SocialAccount[]; selectedAccounts: string[]; toggleAccount: (id: string) => void; preview: Array<{ id: string; mediaId: string; mediaName: string; mediaKind: "image" | "video"; mediaUrl: string; date: string; time: string; platform: string[]; caption: string }>;
+  accounts: SocialAccount[]; selectedAccounts: string[]; toggleAccount: (id: string) => void; facebookPages: ConnectedSocialAccount[]; facebookPagesError: string; facebookPublisherEnabled: boolean; selectedFacebookPageId: string; setSelectedFacebookPageId: (id: string) => void; preview: Array<{ id: string; mediaId: string; mediaName: string; mediaKind: "image" | "video"; mediaUrl: string; date: string; time: string; platform: string[]; caption: string }>;
   expectedCount: number; onSave: () => void; saveDisabled: boolean; saving: boolean; onMove: (source: number, target: number) => void; onRemovePreview: (mediaId: string) => void; onCaptionChange: (id: string, caption: string) => void; onDragStart: (event: DragEvent<HTMLElement>, index: number) => void; draggedPost: number | null; blocked: boolean; setNotice: (value: string) => void;
 };
 
@@ -502,13 +624,13 @@ function BulkSchedule(props: BulkProps) {
 
   return <><div className="page-heading"><div><div className="eyebrow page-eyebrow"><span className="live-dot" /> YOUR NEW FAVOURITE SHORTCUT</div><h1>{props.section === "create-post" ? "Create a post" : "A month of posts. Sorted."}</h1><p>Line up your content, pick your pace, and let your calendar fall into place.</p></div><div className="heading-actions"><Link href="/calendar" className="button button-white"><Icon name="calendar" size={17} /> Open calendar</Link></div></div>
     <div className="bulk-banner"><div className="banner-sticker">✳</div><div><b>Big batch of content? You’re in the right place.</b><span>Everything below is just a preview — nothing gets scheduled until you say so.</span></div><div className="banner-spark">✦</div></div>
-    <div className="scheduler-layout"><div className="scheduler-primary"><section className="panel media-panel"><div className="panel-heading"><div><div className="step-label"><span>01</span> FIRST THINGS FIRST</div><h2>Pick your content</h2><p>Bring a little inspiration from your library.</p></div><label className="button button-outline upload-button"><Icon name="upload" size={16} /> Upload content<input aria-label="Upload images and videos" className="file-picker-input" type="file" accept="image/*,video/*" multiple onChange={props.onUploadChange} hidden /></label></div><div className="media-filter">{(["all", "images", "videos"] as const).map((item) => <button key={item} className={`filter-pill ${view === item ? "filter-active" : ""}`} onClick={() => setView(item)}>{item === "all" ? "Everything" : item === "images" ? "Photos" : "Videos"}</button>)}<span className="media-count">{props.media.length} items <span>·</span> {props.selected.length} selected</span></div>{visibleMedia.length === 0 ? <label className="upload-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (event.dataTransfer.files.length) props.onFilesDrop(event.dataTransfer.files); }}><div className="drop-icon"><Icon name="upload" size={23} /></div><b>Your next great post starts here.</b><span>Drop your photos and videos here, or browse your files.</span><span className="drop-formats">PNG, JPG, WEBP, GIF, MP4, MOV · up to 50 MB each</span></label> : <div className="media-grid">{visibleMedia.map((item) => { const active = props.selected.includes(item.id); return <button aria-label={`${active ? "Deselect" : "Select"} ${item.name}`} key={item.id} className={`media-tile ${active ? "media-selected" : ""}`} onClick={() => selectMedia(item.id)}><span className="media-art">{item.kind === "image" ? <Image src={item.url} alt={item.name} fill sizes="(max-width: 700px) 33vw, 180px" unoptimized /> : <video src={item.url} aria-label={item.name} muted />}<span className={`tile-media-badge ${item.kind === "video" ? "" : "badge-photo"}`}><Icon name={item.kind === "video" ? "play" : "image"} size={13} /></span><span className="tile-checkbox">{active ? "✓" : ""}</span></span><span className="media-file-name">{item.name}</span></button>; })}<label className="add-more-tile"><span><Icon name="plus" size={20} /></span>Add more<input className="file-picker-input" aria-label="Add content" type="file" accept="image/*,video/*" multiple onChange={props.onUploadChange} /></label></div>}<div className="media-footnote"><span className="info-bubble">i</span> Photos and videos will be matched up to your scheduled time slots, in order.</div></section>
+    <div className="scheduler-layout"><div className="scheduler-primary"><section className="panel media-panel"><div className="panel-heading"><div><div className="step-label"><span>01</span> FIRST THINGS FIRST</div><h2>Pick your content</h2><p>Bring a little inspiration from your library.</p></div><label className="button button-outline upload-button"><Icon name="upload" size={16} /> {props.mediaUploading ? "Uploading…" : "Upload content"}<input aria-label="Upload images and videos" className="file-picker-input" type="file" accept="image/*,video/*" multiple onChange={props.onUploadChange} hidden /></label></div><div className="media-filter">{(["all", "images", "videos"] as const).map((item) => <button key={item} className={`filter-pill ${view === item ? "filter-active" : ""}`} onClick={() => setView(item)}>{item === "all" ? "Everything" : item === "images" ? "Photos" : "Videos"}</button>)}<span className="media-count">{props.media.length} items <span>·</span> {props.selected.length} selected</span></div>{visibleMedia.length === 0 ? <label className="upload-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (event.dataTransfer.files.length) void props.onFilesDrop(event.dataTransfer.files); }}><div className="drop-icon"><Icon name="upload" size={23} /></div><b>Your next great post starts here.</b><span>Drop your photos and videos here, or browse your files.</span><span className="drop-formats">PNG, JPG, WEBP, GIF, MP4, MOV · up to 50 MB each</span></label> : <div className="media-grid">{visibleMedia.map((item) => { const active = props.selected.includes(item.id); return <button aria-label={`${active ? "Deselect" : "Select"} ${item.name}`} key={item.id} className={`media-tile ${active ? "media-selected" : ""}`} onClick={() => selectMedia(item.id)}><span className="media-art">{item.kind === "image" ? <Image src={item.url} alt={item.name} fill sizes="(max-width: 700px) 33vw, 180px" unoptimized /> : <video src={item.url} aria-label={item.name} muted />}<span className={`tile-media-badge ${item.kind === "video" ? "" : "badge-photo"}`}><Icon name={item.kind === "video" ? "play" : "image"} size={13} /></span><span className="tile-checkbox">{active ? "✓" : ""}</span></span><span className="media-file-name">{item.name}</span></button>; })}<label className="add-more-tile"><span><Icon name="plus" size={20} /></span>Add more<input className="file-picker-input" aria-label="Add content" type="file" accept="image/*,video/*" multiple onChange={props.onUploadChange} /></label></div>}<div className="media-footnote"><span className="info-bubble">i</span> {props.mediaUploading ? "Uploading content to your workspace…" : "Uploaded photos and videos will be matched to their scheduled time slots, in order."}</div></section>
 
     <section className="panel schedule-panel"><div className="panel-heading"><div><div className="step-label"><span>02</span> FIND YOUR RHYTHM</div><h2>Set your schedule</h2><p>One post a day, a few a week — whatever works for you.</p></div><span className="panel-spark">✳</span></div><div className="schedule-fields"><label className="field-wrap"><span>START DATE</span><span className="input-with-icon"><Icon name="calendar" size={16} /><input type="date" value={props.startDate} onChange={(event) => props.setStartDate(event.target.value)} /></span></label><label className="field-wrap"><span>END DATE <em>OPTIONAL</em></span><span className="input-with-icon"><Icon name="calendar" size={16} /><input type="date" value={props.endDate} min={props.startDate} onChange={(event) => props.setEndDate(event.target.value)} /></span></label><label className="field-wrap frequency-field"><span>HOW OFTEN?</span><span className="input-with-icon"><Icon name="clock" size={16} /><select value={props.frequency} onChange={(event) => props.setFrequency(event.target.value)}><option value="daily">Every day · 1 post a day</option><option value="three-weekly">Three times a week · Mon, Wed, Fri</option><option value="custom">Pick my own days</option></select><Icon name="down" size={15} /></span></label><label className="field-wrap"><span>POST AT</span><span className="input-with-icon"><Icon name="clock" size={16} /><input type="time" value={props.time} onChange={(event) => props.setTime(event.target.value)} /></span></label></div>{props.frequency === "custom" && <div className="custom-days"><span>PICK YOUR DAYS</span>{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, index) => <button key={day} className={props.customDays.includes(index) ? "weekday-selected" : ""} onClick={() => toggleDay(index)}>{day}</button>)}</div>}{!props.endDate && <div className="date-range-hint"><Icon name="clock" size={14} /> No end date? We’ll plan the next 30 days, and use the content you’ve added.</div>}</section>
 
-    <section className="panel account-panel"><div className="panel-heading"><div><div className="step-label"><span>03</span> WHERE IT ALL GOES</div><h2>Choose your channels</h2><p>Your post will show up on every channel you pick.</p></div><span className="account-count">{props.selectedAccounts.length} SELECTED</span></div><div className="account-choices">{props.accounts.slice(0, 3).map((account) => <button key={account.id} aria-pressed={props.selectedAccounts.includes(account.id)} onClick={() => props.toggleAccount(account.id)} className={`account-chip ${props.selectedAccounts.includes(account.id) ? "account-chip-selected" : ""}`}><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span className="account-chip-label"><b>{account.label}</b><small>{account.handle}</small></span><span className="account-check">{props.selectedAccounts.includes(account.id) ? "✓" : ""}</span></button>)}<Link href="/accounts" className="manage-accounts">+ Connect more accounts</Link></div></section></div>
+    <section className="panel account-panel"><div className="panel-heading"><div><div className="step-label"><span>03</span> WHERE IT ALL GOES</div><h2>Choose your channels</h2><p>Your post will show up on every channel you pick.</p></div><span className="account-count">{props.selectedAccounts.length} SELECTED</span></div><div className="account-choices">{props.accounts.slice(0, 3).map((account) => <button key={account.id} aria-pressed={props.selectedAccounts.includes(account.id)} onClick={() => props.toggleAccount(account.id)} className={`account-chip ${props.selectedAccounts.includes(account.id) ? "account-chip-selected" : ""}`}><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span className="account-chip-label"><b>{account.label}</b><small>{account.handle}</small></span><span className="account-check">{props.selectedAccounts.includes(account.id) ? "✓" : ""}</span></button>)}<Link href="/accounts" className="manage-accounts">+ Connect more accounts</Link></div>{props.selectedAccounts.includes("facebook") && <div className="facebook-page-picker"><label className="field-wrap"><span>POST THIS TO FACEBOOK PAGE</span><span className="input-with-icon"><Icon name="share" size={15} /><select value={props.selectedFacebookPageId} onChange={(event) => props.setSelectedFacebookPageId(event.target.value)}><option value="">Choose a connected Page</option>{props.facebookPages.map((page) => <option key={page.id} value={page.id}>{page.account_name}</option>)}</select><Icon name="down" size={15} /></span></label>{props.facebookPagesError ? <p className="facebook-page-help" role="alert">{props.facebookPagesError}</p> : props.facebookPages.length === 0 ? <p className="facebook-page-help">No connected Facebook Pages found. Connect a Page in <Link href="/accounts">Social accounts</Link> first.</p> : <p className="facebook-page-help">{props.facebookPublisherEnabled ? "Uploaded images will publish to this Page at the scheduled time." : "Choose the Page. To enable automatic publishing, set CONTENT_FLOW_PUBLISHER_ENABLED=true in backend/.env and restart the API."} Facebook scheduling currently supports images.</p>}</div>}</section></div>
 
-    <aside className="scheduler-preview"><div className="preview-heading"><div><span className="preview-stars">✳</span><h2>Your schedule</h2></div><span className="preview-live"><i /> LIVE PREVIEW</span></div><div className="preview-subheading"><span>YOUR CONTENT, FINDING ITS PLACE</span><span>{props.preview.length} POSTS</span></div><div className="preview-warning">✦ AI caption starter included — give every draft your own finishing touch.</div>{props.blocked && <div className="schedule-warning"><span>⚠</span><div><b>There’s a little overlap.</b><p>One of these channels already has a post planned for the same time. Tweak the time or edit your other schedule.</p></div></div>}{insufficientContent && <div className="schedule-warning shortage-warning"><span>i</span><div><b>Your content will cover part of this schedule.</b><p>There are more time slots than uploaded items. Add more content, or preview a shorter schedule with what you have.</p></div></div>}{props.media.length > 0 && props.preview.length === 0 && <div className="schedule-warning shortage-warning"><span>i</span><div><b>No posting days in this date range.</b><p>Choose at least one posting day and check the start and end dates.</p></div></div>}<div className="post-preview-list">{props.preview.map((post, index) => <article key={post.id} className={`post-preview-card ${props.draggedPost === index ? "post-dragging" : ""}`} draggable onDragStart={(event) => props.onDragStart(event, index)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); if (props.draggedPost !== null && props.draggedPost !== index) props.onMove(props.draggedPost, index); }}><div className="preview-post-top"><span className="drag-grip" title="Drag to change the order">⠿</span><span className="preview-date">{friendlyDate(post.date)} <span>·</span> {post.time}</span><button title="Remove this post" aria-label={`Remove ${post.mediaName}`} className="remove-preview" onClick={() => props.setNotice("To leave out a post, uncheck its content thumbnail above.")}><Icon name="close" size={14} /></button></div><div className="preview-post-media"><div className="preview-thumb">{post.mediaKind === "image" ? <Image src={post.mediaUrl} alt={post.mediaName} fill sizes="120px" unoptimized /> : <video src={post.mediaUrl} muted aria-label={post.mediaName} />}</div><div className="preview-caption-info"><b>{post.mediaName}</b><span><Icon name="spark" size={12} /> AI caption starter</span></div><span className="platform-icons">{post.platform.map((id) => { const account = props.accounts.find((item) => item.id === id); return account ? <i key={id} title={account.label} style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</i> : null; })}</span></div><label className="caption-edit-label" htmlFor={`caption-${post.id}`}>YOUR CAPTION <span>✎ EDIT</span></label><textarea id={`caption-${post.id}`} className="caption-edit" value={post.caption} onChange={(event) => props.onCaptionChange(post.id, event.target.value)} /></article>)}{props.preview.length === 0 && <div className="preview-empty"><span className="preview-empty-icon">✳</span><b>Your posts will pop up here.</b><p>Pick a few photos, videos, or your days to post. There’s no wrong place to start.</p><span className="empty-arrow">↖ start by adding your content</span></div>}</div>{props.preview.length > 0 && <div className="preview-footer"><span>✳ {props.selected.length} {props.selected.length === 1 ? "post" : "posts"} ready to go</span><span className="preview-footer-note">Drag to reorder <span>⠿</span></span></div>}<button className="button button-primary schedule-submit" disabled={!props.preview.length || props.selectedAccounts.length === 0 || props.blocked} onClick={props.onSave}><Icon name="calendar" size={17} /> Schedule {props.preview.length || ""} {props.preview.length === 1 ? "post" : "posts"} <span>↗</span></button><p className="schedule-disclaimer">Take one last look before scheduling. You can always edit your posts later.</p></aside></div></>;
+    <aside className="scheduler-preview"><div className="preview-heading"><div><span className="preview-stars">✳</span><h2>Your schedule</h2></div><span className="preview-live"><i /> LIVE PREVIEW</span></div><div className="preview-subheading"><span>YOUR CONTENT, FINDING ITS PLACE</span><span>{props.preview.length} POSTS</span></div><div className="preview-warning">✦ AI caption starter included — give every draft your own finishing touch.</div>{props.blocked && <div className="schedule-warning"><span>⚠</span><div><b>There’s a little overlap.</b><p>One of these channels already has a post planned for the same time. Tweak the time or edit your other schedule.</p></div></div>}{insufficientContent && <div className="schedule-warning shortage-warning"><span>i</span><div><b>Your content will cover part of this schedule.</b><p>There are more time slots than uploaded items. Add more content, or preview a shorter schedule with what you have.</p></div></div>}{props.media.length > 0 && props.preview.length === 0 && <div className="schedule-warning shortage-warning"><span>i</span><div><b>No posting days in this date range.</b><p>Choose at least one posting day and check the start and end dates.</p></div></div>}<div className="post-preview-list">{props.preview.map((post, index) => <article key={post.id} className={`post-preview-card ${props.draggedPost === index ? "post-dragging" : ""}`} draggable onDragStart={(event) => props.onDragStart(event, index)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); if (props.draggedPost !== null && props.draggedPost !== index) props.onMove(props.draggedPost, index); }}><div className="preview-post-top"><span className="drag-grip" title="Drag to change the order">⠿</span><span className="preview-date">{friendlyDate(post.date)} <span>·</span> {post.time}</span><button title="Remove this post" aria-label={`Remove ${post.mediaName}`} className="remove-preview" onClick={() => props.setNotice("To leave out a post, uncheck its content thumbnail above.")}><Icon name="close" size={14} /></button></div><div className="preview-post-media"><div className="preview-thumb">{post.mediaKind === "image" ? <Image src={post.mediaUrl} alt={post.mediaName} fill sizes="120px" unoptimized /> : <video src={post.mediaUrl} muted aria-label={post.mediaName} />}</div><div className="preview-caption-info"><b>{post.mediaName}</b><span><Icon name="spark" size={12} /> AI caption starter</span></div><span className="platform-icons">{post.platform.map((id) => { const account = props.accounts.find((item) => item.id === id); return account ? <i key={id} title={account.label} style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</i> : null; })}</span></div><label className="caption-edit-label" htmlFor={`caption-${post.id}`}>YOUR CAPTION <span>✎ EDIT</span></label><textarea id={`caption-${post.id}`} className="caption-edit" value={post.caption} onChange={(event) => props.onCaptionChange(post.id, event.target.value)} /></article>)}{props.preview.length === 0 && <div className="preview-empty"><span className="preview-empty-icon">✳</span><b>Your posts will pop up here.</b><p>Pick a few photos, videos, or your days to post. There’s no wrong place to start.</p><span className="empty-arrow">↖ start by adding your content</span></div>}</div>{props.preview.length > 0 && <div className="preview-footer"><span>✳ {props.selected.length} {props.selected.length === 1 ? "post" : "posts"} ready to go</span><span className="preview-footer-note">Drag to reorder <span>⠿</span></span></div>}<button className="button button-primary schedule-submit" disabled={!props.preview.length || props.selectedAccounts.length === 0 || props.blocked || props.saveDisabled} onClick={props.onSave}><Icon name="calendar" size={17} /> {props.saving ? "Saving…" : <>Schedule {props.preview.length || ""} {props.preview.length === 1 ? "post" : "posts"} <span>↗</span></>}</button><p className="schedule-disclaimer">Take one last look before scheduling. You can always edit your posts later.</p></aside></div></>;
 }
 
 function SectionContent({ section, sectionName, posts, media, onUploadChange, onRemoveMedia, accounts, onRemove, onReschedule, setNotice }: {
@@ -684,12 +806,14 @@ function SocialAccountsSection({ setNotice }: { setNotice: (notice: string) => v
           typeof item === "object" && item !== null
           && "provider" in item && item.provider === "meta"
           && "configured" in item && typeof item.configured === "boolean"
+          && "publisher_enabled" in item && typeof item.publisher_enabled === "boolean"
           && "accounts" in item && Array.isArray(item.accounts),
         );
         if (!meta) throw new Error("The server did not return Meta connection status.");
         const connectedAccounts = meta.accounts.filter((item): item is ConnectedSocialAccount =>
           typeof item === "object" && item !== null
           && "id" in item && typeof item.id === "string"
+          && "account_id" in item && typeof item.account_id === "string"
           && "platform" in item && typeof item.platform === "string"
           && "account_name" in item && typeof item.account_name === "string"
           && "account_type" in item && typeof item.account_type === "string",

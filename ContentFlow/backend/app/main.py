@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import hashlib
 import secrets
@@ -33,6 +35,7 @@ def load_backend_environment(env_file: Path | None = None) -> None:
 
 load_backend_environment()
 
+logger = logging.getLogger(__name__)
 
 Platform = Literal["instagram", "facebook", "linkedin", "youtube", "tiktok"]
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -167,6 +170,9 @@ class ScheduledPostCreate(BaseModel):
     time: time
     platforms: list[Platform] = Field(min_length=1, max_length=5)
     caption: str = Field(default="", max_length=5000)
+    asset_id: Optional[str] = None
+    facebook_account_id: Optional[str] = None
+    timezone_offset_minutes: int = Field(default=0, ge=-840, le=840)
 
     @field_validator("media_name", mode="before")
     @classmethod
@@ -215,6 +221,10 @@ class ScheduledPostResponse(BaseModel):
     time: str
     platforms: list[Platform]
     caption: str
+    asset_id: Optional[str] = None
+    facebook_account_id: Optional[str] = None
+    publish_status: Literal["scheduled", "publishing", "published", "failed"] = "scheduled"
+    publish_error: Optional[str] = None
 
 
 class AssetResponse(BaseModel):
@@ -257,6 +267,7 @@ class SocialProviderStatus(BaseModel):
     provider: Literal["meta", "tiktok", "linkedin", "youtube"]
     configured: bool
     accounts: list[SocialAccountResponse]
+    publisher_enabled: bool = False
 
 
 def utc_now() -> str:
@@ -336,7 +347,13 @@ def initialize_storage() -> None:
                 platforms_json TEXT NOT NULL,
                 caption TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                asset_id TEXT REFERENCES assets(id),
+                facebook_account_id TEXT,
+                timezone_offset_minutes INTEGER NOT NULL DEFAULT 0,
+                publish_status TEXT NOT NULL DEFAULT 'scheduled',
+                publish_error TEXT,
+                published_post_id TEXT
             );
             CREATE INDEX IF NOT EXISTS scheduled_posts_user_date_idx
                 ON scheduled_posts(user_id, scheduled_date, scheduled_time);
@@ -378,12 +395,51 @@ def initialize_storage() -> None:
             connection.execute(
                 "ALTER TABLE assets ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE"
             )
+        scheduled_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(scheduled_posts)")
+        }
+        scheduled_migrations = {
+            "asset_id": "ALTER TABLE scheduled_posts ADD COLUMN asset_id TEXT REFERENCES assets(id)",
+            "facebook_account_id": "ALTER TABLE scheduled_posts ADD COLUMN facebook_account_id TEXT",
+            "timezone_offset_minutes": (
+                "ALTER TABLE scheduled_posts ADD COLUMN timezone_offset_minutes INTEGER NOT NULL DEFAULT 0"
+            ),
+            "publish_status": (
+                "ALTER TABLE scheduled_posts ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'scheduled'"
+            ),
+            "publish_error": "ALTER TABLE scheduled_posts ADD COLUMN publish_error TEXT",
+            "published_post_id": "ALTER TABLE scheduled_posts ADD COLUMN published_post_id TEXT",
+        }
+        for column, migration in scheduled_migrations.items():
+            if column not in scheduled_columns:
+                connection.execute(migration)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_storage()
-    yield
+    publisher_task = None
+    if publisher_is_enabled():
+        publisher_interval_seconds()
+        with connect_database() as connection:
+            connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET publish_status = 'failed',
+                    publish_error = 'The publisher stopped while this post was being sent. Check the Page before retrying.'
+                WHERE publish_status = 'publishing'
+                """
+            )
+        publisher_task = asyncio.create_task(run_publisher_scheduler())
+    try:
+        yield
+    finally:
+        if publisher_task is not None:
+            publisher_task.cancel()
+            try:
+                await publisher_task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
@@ -695,7 +751,158 @@ def scheduled_post_from_row(row: sqlite3.Row) -> ScheduledPostResponse:
         time=row["scheduled_time"],
         platforms=json.loads(row["platforms_json"]),
         caption=row["caption"],
+        asset_id=row["asset_id"],
+        facebook_account_id=row["facebook_account_id"],
+        publish_status=row["publish_status"],
+        publish_error=row["publish_error"],
     )
+
+
+def publisher_is_enabled() -> bool:
+    value = os.environ.get("CONTENT_FLOW_PUBLISHER_ENABLED", "false").strip().lower()
+    if value not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+        raise RuntimeError("CONTENT_FLOW_PUBLISHER_ENABLED must be a boolean value.")
+    return value in {"true", "1", "yes", "on"}
+
+
+def publisher_interval_seconds() -> int:
+    try:
+        interval = int(os.environ.get("CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS", "60"))
+    except ValueError as error:
+        raise RuntimeError("CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS must be an integer.") from error
+    if interval < 5:
+        raise RuntimeError("CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS must be at least 5.")
+    return interval
+
+
+def scheduled_post_utc(row: sqlite3.Row) -> datetime:
+    local_datetime = datetime.combine(
+        date.fromisoformat(row["scheduled_date"]),
+        time.fromisoformat(row["scheduled_time"]),
+    )
+    local_timezone = timezone(timedelta(minutes=-row["timezone_offset_minutes"]))
+    return local_datetime.replace(tzinfo=local_timezone).astimezone(timezone.utc)
+
+
+def scheduled_create_utc(post: ScheduledPostCreate) -> datetime:
+    local_datetime = datetime.combine(post.date, post.time)
+    local_timezone = timezone(timedelta(minutes=-post.timezone_offset_minutes))
+    return local_datetime.replace(tzinfo=local_timezone).astimezone(timezone.utc)
+
+
+async def publish_due_scheduled_posts(now: datetime | None = None) -> None:
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        raise ValueError("Publisher time must be timezone-aware.")
+    current_time = current_time.astimezone(timezone.utc)
+    claimed_posts: list[sqlite3.Row] = []
+    with connect_database() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        candidates = connection.execute(
+            """
+            SELECT * FROM scheduled_posts
+            WHERE publish_status = 'scheduled'
+                AND asset_id IS NOT NULL
+                AND facebook_account_id IS NOT NULL
+            ORDER BY scheduled_date, scheduled_time, created_at
+            """
+        ).fetchall()
+        for row in candidates:
+            if "facebook" not in json.loads(row["platforms_json"]):
+                continue
+            if scheduled_post_utc(row) > current_time:
+                continue
+            updated = connection.execute(
+                """
+                UPDATE scheduled_posts
+                SET publish_status = 'publishing', publish_error = NULL
+                WHERE id = ? AND publish_status = 'scheduled'
+                """,
+                (row["id"],),
+            )
+            if updated.rowcount:
+                claimed_posts.append(row)
+
+    for row in claimed_posts:
+        try:
+            cipher = token_cipher()
+            with connect_database() as connection:
+                account = connection.execute(
+                    """
+                    SELECT account_id, encrypted_tokens FROM social_accounts
+                    WHERE id = ? AND user_id = ? AND provider = 'meta' AND platform = 'facebook'
+                    """,
+                    (row["facebook_account_id"], row["user_id"]),
+                ).fetchone()
+                asset = connection.execute(
+                    """
+                    SELECT filename, media_type, storage_name FROM assets
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (row["asset_id"], row["user_id"]),
+                ).fetchone()
+            if account is None:
+                raise ValueError("The selected Facebook Page is no longer connected.")
+            if asset is None:
+                raise ValueError("The scheduled image is no longer available.")
+            if not asset["media_type"].startswith("image/"):
+                raise ValueError("Facebook scheduled publishing currently supports images only.")
+            media_path = UPLOAD_DIR / asset["storage_name"]
+            tokens = json.loads(cipher.decrypt(account["encrypted_tokens"].encode("ascii")))
+            access_token = tokens.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise ValueError("The Facebook Page authorization has expired. Reconnect the Page.")
+            external_post_id = await social_oauth.publish_facebook_photo(
+                account["account_id"],
+                access_token,
+                media_path,
+                asset["filename"],
+                asset["media_type"],
+                row["caption"],
+            )
+            with connect_database() as connection:
+                connection.execute(
+                    """
+                    UPDATE scheduled_posts
+                    SET publish_status = 'published', publish_error = NULL, published_post_id = ?
+                    WHERE id = ? AND publish_status = 'publishing'
+                    """,
+                    (external_post_id, row["id"]),
+                )
+        except (httpx.HTTPError, OSError, RuntimeError, ValueError, KeyError) as error:
+            message = str(error) or "Facebook could not publish this post."
+            with connect_database() as connection:
+                connection.execute(
+                    """
+                    UPDATE scheduled_posts
+                    SET publish_status = 'failed', publish_error = ?
+                    WHERE id = ? AND publish_status = 'publishing'
+                    """,
+                    (message[:500], row["id"]),
+                )
+            logger.exception("Facebook publishing failed for scheduled post %s.", row["id"])
+        except Exception as error:
+            with connect_database() as connection:
+                connection.execute(
+                    """
+                    UPDATE scheduled_posts
+                    SET publish_status = 'failed',
+                        publish_error = 'An unexpected publishing error occurred. Check the backend logs.'
+                    WHERE id = ? AND publish_status = 'publishing'
+                    """,
+                    (row["id"],),
+                )
+            logger.exception("Unexpected Facebook publishing failure for scheduled post %s.", row["id"])
+
+
+async def run_publisher_scheduler() -> None:
+    interval = publisher_interval_seconds()
+    while True:
+        try:
+            await publish_due_scheduled_posts()
+        except Exception:
+            logger.exception("The scheduled-post publisher could not process its queue.")
+        await asyncio.sleep(interval)
 
 
 def scheduled_post_conflicts(
@@ -759,6 +966,7 @@ def list_social_providers(
             provider=provider,
             configured=configured,
             accounts=accounts_by_provider.get(provider, []),
+            publisher_enabled=publisher_is_enabled(),
         ))
     return results
 
@@ -1029,6 +1237,58 @@ def create_scheduled_posts(
     user: Annotated[sqlite3.Row, Depends(get_current_user)],
 ) -> list[ScheduledPostResponse]:
     incoming = payload.posts
+    for post in incoming:
+        if post.facebook_account_id and "facebook" not in post.platforms:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Select Facebook as a channel for the chosen Facebook Page.",
+            )
+        if post.asset_id and "facebook" in post.platforms and not post.facebook_account_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Choose a connected Facebook Page before scheduling this post.",
+            )
+        if post.facebook_account_id and not post.asset_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Upload an image before scheduling it to Facebook.",
+            )
+        if post.asset_id:
+            with connect_database() as connection:
+                asset = connection.execute(
+                    "SELECT media_type FROM assets WHERE id = ? AND user_id = ?",
+                    (post.asset_id, user["id"]),
+                ).fetchone()
+            if asset is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="One or more uploaded assets could not be found.",
+                )
+            if post.facebook_account_id and not asset["media_type"].startswith("image/"):
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail="Facebook scheduled publishing currently supports images only.",
+                )
+        if post.facebook_account_id:
+            with connect_database() as connection:
+                page = connection.execute(
+                    """
+                    SELECT id FROM social_accounts
+                    WHERE id = ? AND user_id = ? AND provider = 'meta' AND platform = 'facebook'
+                    """,
+                    (post.facebook_account_id, user["id"]),
+                ).fetchone()
+            if page is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Choose a Facebook Page connected to this workspace.",
+                )
+            if scheduled_create_utc(post) <= datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Choose a future date and time for automatic Facebook publishing.",
+                )
+
     for index, post in enumerate(incoming):
         for other in incoming[index + 1 :]:
             if (
@@ -1067,6 +1327,8 @@ def create_scheduled_posts(
                         if row["media_name"] == post.media_name
                         and row["platforms_json"] == json.dumps(post.platforms)
                         and row["caption"] == post.caption
+                        and row["asset_id"] == post.asset_id
+                        and row["facebook_account_id"] == post.facebook_account_id
                     ),
                     None,
                 )
@@ -1083,9 +1345,10 @@ def create_scheduled_posts(
                 """
                 INSERT INTO scheduled_posts (
                     id, media_name, scheduled_date, scheduled_time,
-                    platforms_json, caption, created_at, user_id
+                    platforms_json, caption, created_at, user_id,
+                    asset_id, facebook_account_id, timezone_offset_minutes
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     post_id,
@@ -1096,6 +1359,9 @@ def create_scheduled_posts(
                     post.caption,
                     utc_now(),
                     user["id"],
+                    post.asset_id,
+                    post.facebook_account_id,
+                    post.timezone_offset_minutes,
                 ),
             )
             row = connection.execute(
@@ -1126,6 +1392,11 @@ def reschedule_post(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Scheduled post not found.",
+            )
+        if row["publish_status"] != "scheduled":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Only posts that are still scheduled can be moved.",
             )
 
         scheduled_date = payload.date.isoformat()
@@ -1166,10 +1437,22 @@ def delete_scheduled_post(
 ) -> Response:
     with connect_database() as connection:
         cursor = connection.execute(
-            "DELETE FROM scheduled_posts WHERE id = ? AND user_id = ?",
+            """
+            DELETE FROM scheduled_posts
+            WHERE id = ? AND user_id = ? AND publish_status IN ('scheduled', 'failed')
+            """,
             (post_id, user["id"]),
         )
         if cursor.rowcount == 0:
+            exists = connection.execute(
+                "SELECT 1 FROM scheduled_posts WHERE id = ? AND user_id = ?",
+                (post_id, user["id"]),
+            ).fetchone()
+            if exists is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A post that is publishing or already published cannot be removed.",
+                )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Scheduled post not found.",

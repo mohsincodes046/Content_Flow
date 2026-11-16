@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -44,6 +45,7 @@ def build_authorization_url(provider: str, settings: dict[str, str], redirect_ur
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": settings["scope"],
+        "auth_type": "rerequest",
         "state": state,
     }
     return f"{settings['authorize_url']}?{urlencode(params)}"
@@ -111,7 +113,7 @@ async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any])
         response = await client.get(
             f"https://graph.facebook.com/{META_GRAPH_VERSION}/me/accounts",
             params={
-                "fields": "id,name,access_token,instagram_business_account{id,username}",
+                "fields": "id,name,access_token",
                 "access_token": access_token,
             },
         )
@@ -128,7 +130,15 @@ async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any])
                 "account_type": "page",
                 "tokens": page_tokens,
             })
-            instagram = page.get("instagram_business_account")
+            instagram_response = await client.get(
+                f"https://graph.facebook.com/{META_GRAPH_VERSION}/{page['id']}",
+                params={
+                    "fields": "instagram_business_account{id,username}",
+                    "access_token": page_token,
+                },
+            )
+            instagram_response.raise_for_status()
+            instagram = instagram_response.json().get("instagram_business_account")
             if isinstance(instagram, dict) and instagram.get("id"):
                 accounts.append({
                     "platform": "instagram",
@@ -138,3 +148,30 @@ async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any])
                     "tokens": page_tokens,
                 })
         return accounts
+
+
+async def publish_facebook_photo(
+    page_id: str,
+    access_token: str,
+    media_path: Path,
+    filename: str,
+    media_type: str,
+    caption: str,
+) -> str:
+    if not page_id or not access_token:
+        raise ValueError("A Facebook Page and access token are required to publish.")
+    if not media_type.startswith("image/"):
+        raise ValueError("Facebook scheduled publishing currently supports images only.")
+    with media_path.open("rb") as media_file:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"https://graph.facebook.com/{META_GRAPH_VERSION}/{page_id}/photos",
+                data={"access_token": access_token, "caption": caption},
+                files={"source": (filename, media_file, media_type)},
+            )
+    response.raise_for_status()
+    payload = response.json()
+    post_id = payload.get("post_id") or payload.get("id")
+    if not isinstance(post_id, str) or not post_id:
+        raise ValueError("Meta did not return a Facebook post ID.")
+    return post_id

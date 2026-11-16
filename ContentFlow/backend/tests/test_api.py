@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -362,7 +363,9 @@ def test_meta_oauth_start_requires_https_callback_url(
     assert "requires an HTTPS API callback" in insecure.json()["detail"]
     assert secure.status_code == 302
     assert "redirect_uri=https%3A%2F%2Fcontentflow-api.example.com" in secure.headers["location"]
-    scopes = parse_qs(urlparse(secure.headers["location"]).query)["scope"][0].split(",")
+    authorization_params = parse_qs(urlparse(secure.headers["location"]).query)
+    assert authorization_params["auth_type"] == ["rerequest"]
+    scopes = authorization_params["scope"][0].split(",")
     assert "read_insights" not in scopes
     assert "pages_read_user_content" not in scopes
 
@@ -460,6 +463,9 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
     assert providers.status_code == 200
     meta = next(provider for provider in providers.json() if provider["provider"] == "meta")
     assert [account["platform"] for account in meta["accounts"]] == ["facebook", "instagram"]
+    instagram = next(account for account in meta["accounts"] if account["platform"] == "instagram")
+    assert instagram["account_id"] == "instagram-77"
+    assert instagram["account_name"] == "contentflow.official"
     assert all("access_token" not in account for account in meta["accounts"])
 
     with main.connect_database() as connection:
@@ -513,14 +519,20 @@ def test_meta_exchange_uses_long_lived_token_for_facebook_page_discovery(
         if params.get("grant_type") == "fb_exchange_token":
             assert params["fb_exchange_token"] == "short-user-token"
             return httpx.Response(200, json={"access_token": "long-user-token", "expires_in": 5184000})
-        assert request.url.path.endswith("/me/accounts")
-        assert params["access_token"] == "long-user-token"
-        return httpx.Response(200, json={"data": [{
-            "id": "page-42",
-            "name": "ContentFlow Page",
-            "access_token": "long-page-token",
+        if request.url.path.endswith("/me/accounts"):
+            assert params["access_token"] == "long-user-token"
+            assert params["fields"] == "id,name,access_token"
+            return httpx.Response(200, json={"data": [{
+                "id": "page-42",
+                "name": "ContentFlow Page",
+                "access_token": "long-page-token",
+            }]})
+        assert request.url.path.endswith("/page-42")
+        assert params["access_token"] == "long-page-token"
+        assert params["fields"] == "instagram_business_account{id,username}"
+        return httpx.Response(200, json={
             "instagram_business_account": {"id": "instagram-77", "username": "contentflow.official"},
-        }]})
+        })
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handle_request)
@@ -544,6 +556,43 @@ def test_meta_exchange_uses_long_lived_token_for_facebook_page_discovery(
     assert [account["platform"] for account in discovered_accounts] == ["facebook", "instagram"]
     assert all(account["tokens"]["access_token"] == "long-page-token" for account in discovered_accounts)
     assert all(account["tokens"]["expires_at"] is None for account in discovered_accounts)
+
+
+def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "post.jpg"
+    image_path.write_bytes(b"test image bytes")
+    real_async_client = httpx.AsyncClient
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/v25.0/page-42/photos"
+        body = request.read()
+        assert b"name=\"caption\"" in body
+        assert b"A Facebook caption" in body
+        assert b"page-token" in body
+        assert b"filename=\"post.jpg\"" in body
+        assert b"test image bytes" in body
+        return httpx.Response(200, json={"id": "facebook-photo-99"})
+
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(
+        main.social_oauth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+    post_id = asyncio.run(main.social_oauth.publish_facebook_photo(
+        "page-42",
+        "page-token",
+        image_path,
+        "post.jpg",
+        "image/jpeg",
+        "A Facebook caption",
+    ))
+
+    assert post_id == "facebook-photo-99"
 
 
 def test_caption_generation_requires_provider_key(
@@ -693,6 +742,90 @@ def test_create_and_list_scheduled_posts(client: TestClient) -> None:
     assert [post["id"] for post in listed.json()] == [
         post["id"] for post in created.json()
     ]
+
+
+def test_scheduled_facebook_image_posts_to_the_selected_page(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encryption_key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
+    page_record_id = "connected-facebook-page"
+    with main.connect_database() as connection:
+        user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
+        assert user is not None
+        connection.execute(
+            """
+            INSERT INTO social_accounts (
+                id, user_id, provider, platform, account_id, account_name, account_type,
+                encrypted_tokens, expires_at, connected_at, updated_at
+            ) VALUES (?, ?, 'meta', 'facebook', 'meta-page-42', 'Rahat Pizza Islamabad', 'page', ?, NULL, ?, ?)
+            """,
+            (
+                page_record_id,
+                user["id"],
+                Fernet(encryption_key).encrypt(json.dumps({"access_token": "page-token"}).encode()).decode("ascii"),
+                datetime.now(timezone.utc).isoformat(),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+    uploaded = client.post(
+        "/api/assets",
+        files={"file": ("poster.jpg", b"image bytes", "image/jpeg")},
+    )
+    assert uploaded.status_code == 201
+    scheduled_for = datetime.now(timezone.utc) + timedelta(days=1)
+    scheduled_for = scheduled_for.replace(hour=10, minute=0, second=0, microsecond=0)
+    created = client.post(
+        "/api/scheduled-posts",
+        json={
+            "posts": [{
+                "media_name": "poster.jpg",
+                "date": scheduled_for.date().isoformat(),
+                "time": "10:00",
+                "platforms": ["facebook"],
+                "caption": "A new menu is here.",
+                "asset_id": uploaded.json()["id"],
+                "facebook_account_id": page_record_id,
+                "timezone_offset_minutes": 0,
+            }],
+        },
+    )
+    assert created.status_code == 201
+    scheduled_post = created.json()[0]
+    assert scheduled_post["publish_status"] == "scheduled"
+    assert scheduled_post["facebook_account_id"] == page_record_id
+
+    with main.connect_database() as connection:
+        connection.execute(
+            "UPDATE scheduled_posts SET scheduled_date = '2020-01-01', scheduled_time = '00:00' WHERE id = ?",
+            (scheduled_post["id"],),
+        )
+
+    published: list[tuple[str, str, bytes, str]] = []
+
+    async def fake_publish(
+        page_id: str,
+        access_token: str,
+        media_path: Path,
+        filename: str,
+        media_type: str,
+        caption: str,
+    ) -> str:
+        assert access_token == "page-token"
+        assert filename == "poster.jpg"
+        assert media_type == "image/jpeg"
+        published.append((page_id, caption, media_path.read_bytes(), filename))
+        return "meta-post-123"
+
+    monkeypatch.setattr(main.social_oauth, "publish_facebook_photo", fake_publish)
+    asyncio.run(main.publish_due_scheduled_posts())
+
+    refreshed = client.get("/api/scheduled-posts")
+    assert refreshed.status_code == 200
+    assert refreshed.json()[0]["publish_status"] == "published"
+    assert published == [("meta-page-42", "A new menu is here.", b"image bytes", "poster.jpg")]
 
 
 def test_scheduled_posts_reject_channel_time_conflicts_atomically(client: TestClient) -> None:
