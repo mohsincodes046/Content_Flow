@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
-from app import media, meta_graph
+from app import linkedin_api, media, meta_graph, tiktok_api
 from app.config import env_int, publisher_interval_seconds
 from app.database import connect_database, utc_now
 from app.posts import add_event, post_media, refresh_publish_status
@@ -82,11 +82,33 @@ def _claim(now: datetime, post_id: Optional[str]) -> list[str]:
     return claimed
 
 
+def _save_tokens(account_id: str, tokens: dict) -> None:
+    with connect_database() as connection:
+        connection.execute(
+            "UPDATE social_accounts SET encrypted_tokens = ?, expires_at = ?, updated_at = ? WHERE id = ?",
+            (token_cipher().encrypt(json.dumps(tokens).encode("utf-8")).decode("ascii"), tokens.get("expires_at"),
+             utc_now(), account_id),
+        )
+
+
 async def _send(target: dict, post: dict, account: dict, media_rows: list[dict]) -> meta_graph.PublishResult:
-    token = json.loads(token_cipher().decrypt(account["encrypted_tokens"].encode("ascii"))).get("access_token")
+    tokens = json.loads(token_cipher().decrypt(account["encrypted_tokens"].encode("ascii")))
+    caption = target["caption_override"] if target["caption_override"] is not None else post["caption"]
+    if target["platform"] == "tiktok":
+        if tiktok_api.needs_refresh(tokens):
+            tokens = await tiktok_api.refresh(tokens)
+            _save_tokens(account["id"], tokens)
+        video = media_rows[0]
+        return await tiktok_api.publish_video(tokens["access_token"], caption, media.asset_path(video["storage_name"]),
+                                              video["media_type"])
+    if target["platform"] == "linkedin":
+        if linkedin_api.expired(tokens):
+            raise meta_graph.GraphError("The LinkedIn connection has expired. Reconnect it.", code=190)
+        images = [(media.asset_path(m["storage_name"]), m["media_type"]) for m in media_rows]
+        return await linkedin_api.publish(account["account_id"], tokens["access_token"], caption, images)
+    token = tokens.get("access_token")
     if not token:
         raise meta_graph.GraphError("No access token is stored for this account. Reconnect it.", code=190)
-    caption = target["caption_override"] if target["caption_override"] is not None else post["caption"]
     if target["platform"] == "facebook":
         files = [meta_graph.MediaFile(media.asset_path(m["storage_name"]), m["filename"], m["media_type"]) for m in media_rows]
         return await meta_graph.publish_facebook(account["account_id"], token, caption, files)

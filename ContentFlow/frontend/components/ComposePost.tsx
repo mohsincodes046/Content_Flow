@@ -16,8 +16,8 @@ type Draft = {
   when: string; reviewer: string;
 };
 
-const platformName: Record<string, string> = { facebook: "Facebook", instagram: "Instagram" };
-const captionLimit: Record<string, number> = { facebook: 63206, instagram: 2200 };
+const platformName: Record<string, string> = { facebook: "Facebook", instagram: "Instagram", tiktok: "TikTok", linkedin: "LinkedIn" };
+const captionLimit: Record<string, number> = { facebook: 63206, instagram: 2200, tiktok: 2200, linkedin: 3000 };
 const eventLabel: Record<string, string> = {
   created: "Created", edited: "Edited", submitted: "Sent for review", approved: "Approved", rejected: "Rejected",
   changes_requested: "Changes requested", comment: "Comment", scheduled: "Scheduled", unscheduled: "Unscheduled",
@@ -70,7 +70,7 @@ export default function ComposePost({ user, setNotice }: { user: SessionUser; se
       postId ? api<Post>(`/api/posts/${encodeURIComponent(postId)}`) : Promise.resolve(null),
     ]).then(([providers, assets, members, loaded]) => {
       if (!active) return;
-      setAccounts(providers.flatMap((p) => p.accounts).filter((a) => a.platform === "facebook" || a.platform === "instagram"));
+      setAccounts(providers.flatMap((p) => p.accounts));
       // Keep anything uploaded while this request was in flight.
       setLibrary((current) => [...current, ...assets.filter((asset) => !current.some((item) => item.id === asset.id))]);
       setReviewers(members.filter((m) => ["client", "admin", "owner"].includes(m.role) && m.user_id !== user.id));

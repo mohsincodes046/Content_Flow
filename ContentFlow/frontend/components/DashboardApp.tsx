@@ -344,11 +344,11 @@ export default function DashboardApp({ section }: { section: string }) {
   }, [startDate, endDate]);
 
   const channelOptions: ChannelOption[] = useMemo(() => [
-    ...connectedAccounts.filter((account) => account.platform === "facebook" || account.platform === "instagram").map((account) => ({
+    ...connectedAccounts.map((account) => ({
       id: account.id,
       platform: account.platform,
       label: account.platform === "instagram" ? `@${account.account_name}` : account.account_name,
-      note: account.platform === "instagram" ? "Instagram · auto-publish" : "Facebook Page · auto-publish",
+      note: `${({ instagram: "Instagram", facebook: "Facebook Page", tiktok: "TikTok", linkedin: "LinkedIn" } as Record<string, string>)[account.platform] ?? account.platform} · auto-publish`,
     })),
     ...accounts.filter((platform) => !connectedAccounts.some((account) => account.platform === platform.id)).map((platform) => ({
       id: `plan:${platform.id}`, platform: platform.id, label: platform.label, note: "Not connected · calendar only",

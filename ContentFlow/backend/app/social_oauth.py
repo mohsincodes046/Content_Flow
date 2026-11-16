@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from app import meta_graph
+from app import linkedin_api, meta_graph, tiktok_api
 
 # Only what the product uses, which keeps Meta App Review simpler:
 #   pages_show_list, business_management  find the user's Pages (incl. Business Manager Pages)
@@ -26,6 +26,8 @@ PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
         "client_secret": "META_APP_SECRET",
         "scope": META_SCOPES,
     },
+    "tiktok": {"client_id": "TIKTOK_CLIENT_KEY", "client_secret": "TIKTOK_CLIENT_SECRET", "scope": tiktok_api.SCOPES},
+    "linkedin": {"client_id": "LINKEDIN_CLIENT_ID", "client_secret": "LINKEDIN_CLIENT_SECRET", "scope": linkedin_api.SCOPES},
 }
 
 
@@ -67,6 +69,10 @@ def get_provider_settings(provider: str) -> dict[str, str]:
 
 
 def build_authorization_url(provider: str, settings: dict[str, str], redirect_uri: str, state: str) -> str:
+    if provider == "tiktok":
+        return tiktok_api.authorization_url(settings["client_id_value"], redirect_uri, state)
+    if provider == "linkedin":
+        return linkedin_api.authorization_url(settings["client_id_value"], redirect_uri, state)
     if provider != "meta":
         raise ValueError("Only Meta OAuth is enabled in this integration phase.")
     params = {
@@ -93,6 +99,10 @@ async def exchange_authorization_code(
     code: str,
     redirect_uri: str,
 ) -> dict[str, Any]:
+    if provider == "tiktok":
+        return await tiktok_api.exchange_code(settings["client_id_value"], settings["client_secret_value"], code, redirect_uri)
+    if provider == "linkedin":
+        return await linkedin_api.exchange_code(settings["client_id_value"], settings["client_secret_value"], code, redirect_uri)
     if provider != "meta":
         raise ValueError("Only Meta OAuth is enabled in this integration phase.")
     async with httpx.AsyncClient(timeout=30) as client:
@@ -131,6 +141,10 @@ async def exchange_authorization_code(
 
 async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any]) -> dict[str, Any]:
     """Pages and linked Instagram accounts the signed-in Meta user can manage (see meta_graph)."""
+    if provider == "tiktok":
+        return await tiktok_api.discover(token_data)
+    if provider == "linkedin":
+        return await linkedin_api.discover(token_data)
     if provider != "meta":
-        raise ValueError("Only Meta account discovery is enabled in this integration phase.")
+        raise ValueError("Unsupported social account provider.")
     return await meta_graph.discover_accounts(token_data["access_token"])

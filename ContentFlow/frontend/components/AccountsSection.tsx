@@ -76,7 +76,8 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
   }, [setNotice]);
 
   const meta = providers?.find((provider) => provider.provider === "meta");
-  const accounts = meta?.accounts ?? [];
+  const accounts = providers?.flatMap((provider) => provider.accounts) ?? [];
+  const others = providers?.filter((provider) => provider.provider !== "meta") ?? [];
   const pageName = (id?: string | null) => accounts.find((account) => account.id === id)?.account_name;
 
   async function act(label: string, action: () => Promise<unknown>, success: string) {
@@ -102,7 +103,9 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
     <div className="section-card-heading">
       <div><span className="calendar-month-label">SOCIAL CONNECTIONS</span><h2>Connected accounts</h2>
         <p>Facebook Pages and the Instagram professional accounts linked to them, connected through Meta sign-in.</p></div>
-      {manager && connectButton("＋ Connect Facebook & Instagram")}
+      {manager && <div className="team-actions">{connectButton("＋ Connect Facebook & Instagram")}{others.map((p) => p.configured
+        ? <a key={p.provider} className="button button-outline" href={`${apiUrl}/api/social/oauth/${p.provider}/start`}>＋ Connect {platformLabel[p.provider]}</a>
+        : <button key={p.provider} type="button" className="button button-outline" title="Not configured on this server" onClick={() => setNotice(`${platformLabel[p.provider]} is not set up on this server yet. An administrator must add the app credentials.`)}>＋ {platformLabel[p.provider]}</button>)}</div>}
     </div>
     {error && <p className="schedule-load-error" role="alert">{error}</p>}
 
@@ -143,7 +146,7 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
         <span className={`connection-state ${reconnect ? "social-not-connected" : ""}`}><i />{reconnect ? "Needs reconnect" : "Connected"}</span>
         <div className="team-actions">
           <button type="button" disabled={Boolean(busy)} onClick={() => void act(account.id, () => api(`/api/social/accounts/${account.id}/check`, { method: "POST" }, "Unable to check the connection"), "Connection checked.")}>{busy === account.id ? "Checking…" : "Check connection"}</button>
-          {manager && reconnect && meta?.configured && <a className="button button-primary" href={connectHref}>Reconnect</a>}
+          {manager && reconnect && <a className="button button-primary" href={["facebook", "instagram"].includes(account.platform) ? connectHref : `${apiUrl}/api/social/oauth/${account.platform}/start`}>Reconnect</a>}
           {manager && <button type="button" disabled={Boolean(busy)} onClick={() => void act(`delete-${account.id}`, () => api(`/api/social/accounts/${account.id}`, { method: "DELETE" }, "Unable to disconnect"), `${account.account_name} disconnected.`)}>Disconnect</button>}
         </div>
       </article>;
@@ -151,6 +154,6 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
 
     <div className="integration-note"><span>✳</span><span>
       {meta?.publisher_enabled ? "Scheduled posts publish automatically to connected accounts." : "Automatic publishing is turned off on this server; scheduled posts stay on the calendar."}
-      {" "}TikTok and LinkedIn connections are listed separately once configured.</span></div>
+      {" "}TikTok posts stay private until TikTok approves the app; LinkedIn posts go to the connected member profile.</span></div>
   </section>;
 }

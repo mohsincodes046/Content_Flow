@@ -404,11 +404,12 @@ def test_meta_provider_status_requires_app_credentials_and_encryption_key(
     configured = client.get("/api/social/providers")
 
     assert without_encryption.status_code == 200
-    assert len(without_encryption.json()) == 1
+    assert [p["provider"] for p in without_encryption.json()] == ["meta", "tiktok", "linkedin"]
     assert without_encryption.json()[0]["provider"] == "meta"
     assert without_encryption.json()[0]["configured"] is False
     assert configured.json()[0]["configured"] is True
-    unsupported = client.get("/api/social/oauth/tiktok/start")
+    assert client.get("/api/social/oauth/tiktok/start").status_code == 503  # supported, not configured
+    unsupported = client.get("/api/social/oauth/myspace/start")
     assert unsupported.status_code == 404
 
 

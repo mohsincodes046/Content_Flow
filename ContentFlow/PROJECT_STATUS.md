@@ -19,7 +19,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Facebook and Instagram publishing | ✅ | Live posting needs a real Page/IG account (manual test) |
 | Scheduling worker with retries | ✅ | Enable with `CONTENT_FLOW_PUBLISHER_ENABLED=true` |
 | Analytics | ✅ | Live numbers need connected accounts with insights permission (manual test) |
-| TikTok, LinkedIn | ⏳ | |
+| TikTok, LinkedIn | ✅ code / 🔒 live | Needs app credentials; TikTok audit for public posts; LinkedIn approval for company Pages |
 
 ## External requirements (owner action needed)
 

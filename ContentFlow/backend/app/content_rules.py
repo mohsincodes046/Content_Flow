@@ -80,6 +80,21 @@ def check(platform: str, caption: str, media: list[Media], account: Optional[str
                 if ratio < 0.8 - 0.01 or ratio > 1.91 + 0.01:
                     add(f"{label}: Instagram needs an aspect ratio between 4:5 (portrait) and 1.91:1 "
                         f"(landscape); this one is {item.width}×{item.height}.")
+    elif platform == "tiktok":
+        videos = [m for m in media if m.is_video]
+        if len(media) != 1 or len(videos) != 1:
+            add("TikTok posts need exactly one video.")
+        if len(caption) > 2200:
+            add("TikTok captions can be at most 2,200 characters.")
+    elif platform == "linkedin":
+        if not caption.strip() and not media:
+            add("Add text or an image.")
+        if len(caption) > 3000:
+            add("LinkedIn posts can be at most 3,000 characters.")
+        if any(m.is_video for m in media):
+            add("LinkedIn video posts are not supported yet; use text or one image.")
+        elif len(media) > 1:
+            add("LinkedIn posts here can have one image.")
     else:
         add(f"Publishing to {platform} is not available yet.")
     return issues

@@ -4,6 +4,16 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### TikTok and LinkedIn
+- TikTok: Login Kit OAuth, account discovery, direct video posting (upload,
+  status polling, published only on PUBLISH_COMPLETE), automatic token refresh.
+  Posts are private until TikTok audits the app.
+- LinkedIn: OpenID Connect sign-in, text and single-image posts to the member
+  profile (Posts API, version 202610, configurable). Company Pages need
+  LinkedIn's Community Management API approval.
+- Platform rules for both; connect/reconnect buttons; selectable in the editor
+  and bulk scheduler.
+
 ### Analytics
 - Facebook Page (views, viewers, engagements, profile visits, followers) and
   Instagram (views, reach, accounts engaged, interactions, followers) insights
