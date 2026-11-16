@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from urllib.parse import parse_qs, urlparse
 
-from app import ai as ai_service, config, database, main, publisher, security, social_oauth
+from app import ai as ai_service, config, database, main, meta_graph, publisher, security, social_oauth
 
 
 @pytest.fixture()
@@ -364,9 +364,12 @@ def test_meta_oauth_start_requires_https_callback_url(
     assert "redirect_uri=https%3A%2F%2Fcontentflow-api.example.com" in secure.headers["location"]
     authorization_params = parse_qs(urlparse(secure.headers["location"]).query)
     assert authorization_params["auth_type"] == ["rerequest"]
-    scopes = authorization_params["scope"][0].split(",")
-    assert "read_insights" not in scopes
-    assert "pages_read_user_content" not in scopes
+    # Exactly the permissions the product uses (publishing and analytics); any change
+    # here affects Meta App Review and should be deliberate.
+    assert sorted(authorization_params["scope"][0].split(",")) == sorted([
+        "pages_show_list", "business_management", "pages_read_engagement", "read_insights",
+        "pages_manage_posts", "instagram_basic", "instagram_content_publish", "instagram_manage_insights",
+    ])
 
 
 def test_backend_environment_loads_env_file_without_overriding_process_values(
@@ -408,7 +411,7 @@ def test_meta_provider_status_requires_app_credentials_and_encryption_key(
     assert unsupported.status_code == 404
 
 
-def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
+def test_meta_oauth_lets_the_user_choose_accounts_and_stores_tokens_encrypted(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -425,24 +428,20 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
         assert redirect_uri == "https://contentflow-api.example.com/api/social/oauth/meta/callback"
         return {"access_token": "user-access-token", "expires_at": "2026-10-15T00:00:00+00:00"}
 
-    async def fake_accounts(provider: str, token_data: dict[str, object]) -> list[dict[str, object]]:
-        assert provider == "meta"
-        return [
-            {
-                "platform": "facebook",
-                "account_id": "page-42",
-                "account_name": "ContentFlow Page",
-                "account_type": "page",
-                "tokens": {"access_token": "page-access-token", "refresh_token": None, "expires_at": None},
-            },
-            {
-                "platform": "instagram",
-                "account_id": "instagram-77",
-                "account_name": "contentflow.official",
-                "account_type": "professional",
-                "tokens": {"access_token": "page-access-token", "refresh_token": None, "expires_at": None},
-            },
-        ]
+    page_tokens = {"access_token": "page-access-token", "refresh_token": None, "expires_at": None}
+
+    async def fake_accounts(provider: str, token_data: dict[str, object]) -> dict[str, object]:
+        return {"external_user_id": "meta-user-1", "external_user_name": "Mo", "accounts": [
+            {"platform": "facebook", "account_id": "page-42", "account_name": "ContentFlow Page", "account_type": "page",
+             "profile_picture_url": "https://cdn.example.com/p.jpg", "parent_account_id": None,
+             "details": {"can_publish": True}, "tokens": page_tokens},
+            {"platform": "facebook", "account_id": "page-99", "account_name": "Other Page", "account_type": "page",
+             "parent_account_id": None, "details": {"can_publish": True}, "tokens": page_tokens},
+            {"platform": "instagram", "account_id": "instagram-77", "account_name": "contentflow.official",
+             "account_type": "professional", "parent_account_id": "page-42",
+             "details": {"followers_count": 1200, "can_publish": True, "linked_page_name": "ContentFlow Page"},
+             "tokens": page_tokens},
+        ]}
 
     monkeypatch.setattr(social_oauth, "exchange_authorization_code", fake_exchange)
     monkeypatch.setattr(social_oauth, "retrieve_connected_accounts", fake_accounts)
@@ -454,25 +453,37 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
         params={"state": state, "code": "meta-auth-code"},
         follow_redirects=False,
     )
-    providers = client.get("/api/social/providers")
-
     assert start.status_code == 302
     assert callback.status_code == 303
-    assert callback.headers["location"] == "https://contentflow-web.example.com/accounts?social=connected"
-    assert providers.status_code == 200
-    meta = next(provider for provider in providers.json() if provider["provider"] == "meta")
-    assert [account["platform"] for account in meta["accounts"]] == ["facebook", "instagram"]
-    instagram = next(account for account in meta["accounts"] if account["platform"] == "instagram")
-    assert instagram["account_id"] == "instagram-77"
-    assert instagram["account_name"] == "contentflow.official"
-    assert all("access_token" not in account for account in meta["accounts"])
+    location = urlparse(callback.headers["location"])
+    assert location.path == "/accounts" and parse_qs(location.query)["social"] == ["select"]
+    connection_id = parse_qs(location.query)["connection"][0]
+
+    # Nothing is saved until the user chooses.
+    meta = next(provider for provider in client.get("/api/social/providers").json() if provider["provider"] == "meta")
+    assert meta["accounts"] == []
+    pending = client.get(f"/api/social/connections/{connection_id}").json()
+    assert pending["signed_in_as"] == "Mo"
+    assert [c["key"] for c in pending["candidates"]] == ["facebook:page-42", "facebook:page-99", "instagram:instagram-77"]
+    assert "page-access-token" not in json.dumps(pending)
+
+    selected = client.post(f"/api/social/connections/{connection_id}/select",
+                           json={"keys": ["instagram:instagram-77", "facebook:page-42"]})
+    assert selected.status_code == 200
+    by_platform = {a["platform"]: a for a in selected.json()}
+    assert set(by_platform) == {"facebook", "instagram"}  # page-99 was not chosen
+    assert by_platform["instagram"]["parent_account_id"] == by_platform["facebook"]["id"]
+    assert by_platform["instagram"]["followers_count"] == 1200
+    assert by_platform["facebook"]["status"] == "active"
+    assert all("access_token" not in account for account in selected.json())
+    # The pending sign-in is single use.
+    assert client.get(f"/api/social/connections/{connection_id}").status_code == 404
 
     with database.connect_database() as connection:
-        stored_tokens = connection.execute(
-            "SELECT encrypted_tokens FROM social_accounts ORDER BY platform"
-        ).fetchall()
-    decoded_tokens = [json.loads(Fernet(encryption_key).decrypt(row["encrypted_tokens"].encode("ascii"))) for row in stored_tokens]
-    assert [tokens["access_token"] for tokens in decoded_tokens] == ["page-access-token", "page-access-token"]
+        stored = connection.execute("SELECT encrypted_tokens, external_user_id FROM social_accounts").fetchall()
+    assert all(json.loads(Fernet(encryption_key).decrypt(r["encrypted_tokens"].encode()))["access_token"]
+               == "page-access-token" for r in stored)
+    assert {r["external_user_id"] for r in stored} == {"meta-user-1"}
 
     replay = client.get(
         "/api/social/oauth/meta/callback",
@@ -481,80 +492,82 @@ def test_meta_oauth_saves_page_and_instagram_tokens_encrypted(
     )
     assert replay.headers["location"].endswith("/accounts?social=invalid_state")
 
-    facebook_id = next(account["id"] for account in meta["accounts"] if account["platform"] == "facebook")
-    instagram_id = next(account["id"] for account in meta["accounts"] if account["platform"] == "instagram")
     with TestClient(main.app) as another_workspace:
-        another_workspace.post(
-            "/api/auth/register",
-            json={
-                "full_name": "Different User",
-                "workspace_name": "Different Workspace",
-                "email": "different@example.com",
-                "password": "another-safe-password",
-            },
-        )
-        cross_workspace_delete = another_workspace.delete(f"/api/social/accounts/{instagram_id}")
-    assert cross_workspace_delete.status_code == 404
+        another_workspace.post("/api/auth/register", json={
+            "full_name": "Different User", "workspace_name": "Different Workspace",
+            "email": "different@example.com", "password": "another-safe-password",
+        })
+        assert another_workspace.delete(f"/api/social/accounts/{by_platform['instagram']['id']}").status_code == 404
+        assert another_workspace.get(f"/api/social/connections/{connection_id}").status_code == 404
 
-    disconnected = client.delete(f"/api/social/accounts/{facebook_id}")
-    remaining_accounts = client.get("/api/social/providers").json()[0]["accounts"]
-    assert disconnected.status_code == 204
-    assert [account["platform"] for account in remaining_accounts] == ["instagram"]
+    assert client.delete(f"/api/social/accounts/{by_platform['facebook']['id']}").status_code == 204
+    remaining = client.get("/api/social/providers").json()[0]["accounts"]
+    assert [account["platform"] for account in remaining] == ["instagram"]
+    assert remaining[0]["parent_account_id"] is None
 
 
-def test_meta_exchange_uses_long_lived_token_for_facebook_page_discovery(
+def test_meta_exchange_and_discovery_follow_pagination_and_page_permissions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = {
-        "token_url": "https://graph.facebook.com/v25.0/oauth/access_token",
-        "client_id_value": "test-meta-app",
-        "client_secret_value": "test-meta-secret",
-    }
+    settings = {"client_id_value": "test-meta-app", "client_secret_value": "test-meta-secret"}
+    seen_pages: list[str] = []
 
     def handle_request(request: httpx.Request) -> httpx.Response:
         params = dict(request.url.params)
+        path = request.url.path
+        assert path.startswith("/v26.0/")
         if params.get("code") == "meta-auth-code":
             return httpx.Response(200, json={"access_token": "short-user-token", "expires_in": 3600})
         if params.get("grant_type") == "fb_exchange_token":
             assert params["fb_exchange_token"] == "short-user-token"
             return httpx.Response(200, json={"access_token": "long-user-token", "expires_in": 5184000})
-        if request.url.path.endswith("/me/accounts"):
+        if path.endswith("/me"):
+            return httpx.Response(200, json={"id": "meta-user-1", "name": "Mo"})
+        if path.endswith("/me/accounts"):
             assert params["access_token"] == "long-user-token"
-            assert params["fields"] == "id,name,access_token"
-            return httpx.Response(200, json={"data": [{
-                "id": "page-42",
-                "name": "ContentFlow Page",
-                "access_token": "long-page-token",
-            }]})
-        assert request.url.path.endswith("/page-42")
-        assert params["access_token"] == "long-page-token"
-        assert params["fields"] == "instagram_business_account{id,username}"
-        return httpx.Response(200, json={
-            "instagram_business_account": {"id": "instagram-77", "username": "contentflow.official"},
-        })
+            if "after" not in params:
+                return httpx.Response(200, json={
+                    "data": [{"id": "page-42", "name": "First Page", "access_token": "page-42-token",
+                              "tasks": ["CREATE_CONTENT", "ANALYZE"], "category": "Restaurant"}],
+                    "paging": {"cursors": {"after": "cursor-1"}, "next": "https://graph.facebook.com/next"},
+                })
+            assert params["after"] == "cursor-1"
+            return httpx.Response(200, json={"data": [
+                {"id": "page-43", "name": "Read-only Page", "access_token": "page-43-token", "tasks": ["ANALYZE"]},
+                {"id": "page-44", "name": "No token Page"},
+            ]})
+        page_id = path.rsplit("/", 1)[-1]
+        seen_pages.append(page_id)
+        assert params["access_token"] == f"{page_id}-token"
+        if page_id == "page-42":
+            return httpx.Response(200, json={"instagram_business_account": {
+                "id": "instagram-77", "username": "contentflow.official", "followers_count": 1200}})
+        return httpx.Response(200, json={"id": page_id})
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handle_request)
-    monkeypatch.setattr(
-        social_oauth.httpx,
-        "AsyncClient",
-        lambda **kwargs: real_async_client(transport=transport, **kwargs),
-    )
+    for module in (social_oauth.httpx, meta_graph.httpx):
+        monkeypatch.setattr(module, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
 
-    async def connect_and_discover() -> tuple[dict[str, object], list[dict[str, object]]]:
+    async def connect_and_discover():  # type: ignore[no-untyped-def]
         token_data = await social_oauth.exchange_authorization_code(
             "meta", settings, "meta-auth-code", "https://contentflow.example.com/callback",
         )
-        discovered = await social_oauth.retrieve_connected_accounts("meta", token_data)
-        return token_data, discovered
+        return token_data, await social_oauth.retrieve_connected_accounts("meta", token_data)
 
-    token_data, discovered_accounts = asyncio.run(connect_and_discover())
+    token_data, discovered = asyncio.run(connect_and_discover())
 
     assert token_data["access_token"] == "long-user-token"
-    assert len(discovered_accounts) == 2
-    assert [account["platform"] for account in discovered_accounts] == ["facebook", "instagram"]
-    assert all(account["tokens"]["access_token"] == "long-page-token" for account in discovered_accounts)
-    assert all(account["tokens"]["expires_at"] is None for account in discovered_accounts)
+    assert discovered["external_user_id"] == "meta-user-1"
+    accounts = {(a["platform"], a["account_id"]): a for a in discovered["accounts"]}
+    assert sorted(accounts) == [("facebook", "page-42"), ("facebook", "page-43"), ("instagram", "instagram-77")]
+    assert seen_pages == ["page-42", "page-43"]  # the Page without a token was skipped
+    assert accounts[("facebook", "page-42")]["details"]["can_publish"] is True
+    assert accounts[("facebook", "page-43")]["details"]["can_publish"] is False
+    instagram = accounts[("instagram", "instagram-77")]
+    assert instagram["parent_account_id"] == "page-42"
+    assert instagram["details"]["followers_count"] == 1200
+    assert instagram["tokens"]["access_token"] == "page-42-token"
 
 
 def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
@@ -567,7 +580,7 @@ def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
 
     def handle_request(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == "/v25.0/page-42/photos"
+        assert request.url.path == "/v26.0/page-42/photos"
         body = request.read()
         assert b"name=\"caption\"" in body
         assert b"A Facebook caption" in body

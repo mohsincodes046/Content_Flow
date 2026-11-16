@@ -308,6 +308,40 @@ class SocialAccountResponse(BaseModel):
     account_type: str
     connected_at: str
     expires_at: Optional[str]
+    status: Literal["active", "needs_reconnect"] = "active"
+    last_error: Optional[str] = None
+    last_checked_at: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    parent_account_id: Optional[str] = None
+    can_publish: Optional[bool] = None
+    followers_count: Optional[int] = None
+    linked_page_name: Optional[str] = None
+
+
+class ConnectionCandidate(BaseModel):
+    key: str                      # "<platform>:<account_id>"
+    platform: Platform
+    account_id: str
+    account_name: str
+    account_type: str
+    profile_picture_url: Optional[str] = None
+    linked_page_name: Optional[str] = None
+    followers_count: Optional[int] = None
+    can_publish: bool = True
+    already_connected: bool = False
+
+
+class PendingConnection(BaseModel):
+    id: str
+    provider: str
+    signed_in_as: Optional[str] = None
+    candidates: list[ConnectionCandidate]
+
+
+class ConnectionSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str] = Field(min_length=1, max_length=200)
 
 
 class SocialProviderStatus(BaseModel):

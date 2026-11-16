@@ -189,6 +189,20 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
 .invite-link-row { display: flex; align-items: center; gap: 6px; }
 .invite-link-row code { flex: 1; min-width: 0; overflow-x: auto; padding: 6px; border-radius: 6px; background: #0B0F19; font-size: 11px; white-space: nowrap; }
 .invite-screen .auth-form { width: min(360px, 100%); text-align: left; }
+.account-picture { width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; object-fit: cover; border: 1px solid #273044; }
+.connection-picker { margin-top: 14px; padding: 12px; display: grid; gap: 8px; border: 1px solid #A78BFA66; border-radius: 9px; background: #151C2C; }
+.connection-picker p { margin: 0; color: #A1A1AA; font-size: 11px; }
+.candidate-row { display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid #273044; border-radius: 7px; background: #111827; cursor: pointer; }
+.candidate-row span { display: grid; gap: 2px; }
+.candidate-row small, .connected-account-text small { color: #A1A1AA; font-size: 11px; }
+.candidate-limited { opacity: .75; }
+.connection-picker-actions { display: flex; gap: 8px; }
+.connected-account-list { margin-top: 14px; display: grid; gap: 8px; }
+.connected-account { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px; border: 1px solid #273044; border-radius: 8px; background: #111827; }
+.connected-account-warning { border-color: #F8717188; }
+.connected-account-text { flex: 1; min-width: 180px; display: grid; gap: 2px; }
+.connected-account-text .publish-error-text { padding-left: 0; }
+.account-note { color: #F59E0B !important; }
 .auth-switch-button { border: 0; background: none; color: #A78BFA; font: inherit; font-size: 12px; cursor: pointer; }
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-section-label { margin: 0 0 7px; padding: 0 10px; color: #A1A1AA; font-size: 11px; font-weight: 750; letter-spacing: 1.13px; }
@@ -469,6 +483,8 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
 .calendar-month-label { color: #A1A1AA; font-size: 10px; font-weight: 730; letter-spacing: .75px; }
 .section-card-heading h2, .calendar-toolbar h2, .library-toolbar h2, .settings-panel h2, .ai-demo-panel h2 { margin: 6px 0 0; color: #F8FAFC; font-family: var(--serif); font-size: 20px; font-weight: 400; }
 .section-card-heading > a { padding-top: 4px; color: #A78BFA; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.section-card-heading > a.button { padding-top: 0; font-size: 12px; }
+.section-card-heading > a.button-primary { color: #F8FAFC; }
 .post-count-pill { padding: 3px 6px; border-radius: 9px; background: #151C2C; color: #A78BFA; font-family: Arial, sans-serif; font-size: 10px; font-weight: 650; vertical-align: 3px; }
 .upcoming-empty { min-height: 155px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-sun { margin-bottom: 6px; color: #A78BFA; font-size: 19px; }

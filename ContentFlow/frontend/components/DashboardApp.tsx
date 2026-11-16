@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
 import Logo from "./Logo";
 import SubmissionWorkflow from "./SubmissionWorkflow";
+import AccountsSection from "./AccountsSection";
 import TeamSection from "./TeamSection";
 import WorkspaceSwitcher, { NoWorkspace } from "./WorkspaceSwitcher";
 import { canEditContent, isSessionUser, type SessionUser } from "../lib/api";
@@ -785,137 +786,13 @@ function SectionContent({ section, sectionName, currentUser, connectedAccounts, 
     {section === "dashboard" && <><div className="overview-welcome"><div className="welcome-orb">✳</div><div><span className="welcome-kicker">{todayLabel}</span><h2>{greeting}{firstName ? `, ${firstName}` : ""}</h2><p>Big plans or little moments — there&apos;s room for all of it here.</p></div><Link href="/bulk-schedule" className="welcome-link">Plan your week <span>↗</span></Link></div><div className="stats-grid"><article className="stat-card"><div className="stat-label">TOTAL POSTS <span className="stat-icon lavender"><Icon name="calendar" size={17} /></span></div><b>{posts.length}</b><span className="stat-caption">posts in your planner</span></article><article className="stat-card"><div className="stat-label">PUBLISHED <span className="stat-icon green"><span>✓</span></span></div><b>{statusCounts.published}</b><span className="stat-caption">sent to a connected account</span></article><article className="stat-card"><div className="stat-label">FAILED <span className="stat-icon rose"><span>!</span></span></div><b>{statusCounts.failed}</b><span className="stat-caption">{statusCounts.failed ? "needs a quick look" : "nothing needs attention"}</span>{statusCounts.failed > 0 && <Link className="failed-note" href="/calendar">View in calendar ↗</Link>}</article><article className="stat-card"><div className="stat-label">UP NEXT <span className="stat-icon peach"><Icon name="clock" size={17} /></span></div><b>{upcoming.length}</b><span className="stat-caption">scheduled from today on</span></article><article className="stat-card"><div className="stat-label">CHANNELS <span className="stat-icon blue"><Icon name="share" size={16} /></span></div><b>{connectedPlatforms.length} <span className="stat-suffix">of {accounts.length}</span></b><span className="stat-caption">channels connected</span><div className="stat-avatars">{connectedPlatforms.map((item) => <i key={item.id} style={{ "--account-color": item.color } as React.CSSProperties}>{item.icon}</i>)}</div></article></div><div className="overview-grid"><section className="panel upcoming-panel"><div className="section-card-heading"><div><span className="calendar-month-label">THE GOOD THINGS, COMING UP</span><h2>On your calendar <span className="post-count-pill">{upcoming.length}</span></h2></div><Link href="/calendar">See everything <span>↗</span></Link></div>{upcoming.length === 0 ? <div className="upcoming-empty"><div className="empty-sun">✳</div><b>A fresh page, ready for you.</b><p>Your next posts will live here once you&apos;ve planned them.</p><Link className="button button-primary" href="/bulk-schedule">Schedule your first batch <span>↗</span></Link></div> : <div className="upcoming-list">{upcoming.slice(0, 4).map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} />)}</div>}<Link href="/bulk-schedule" className="today-create"><span className="today-create-icon">＋</span><span><b>There&apos;s always room for one more.</b><small>Add a little something to your schedule.</small></span><span className="create-arrow">↗</span></Link></section><section className="panel overview-side-panel"><div className="section-card-heading"><div><span className="calendar-month-label">YOUR CHANNELS, TOGETHER</span><h2>Connected accounts</h2></div><Link href="/accounts">Manage <span>↗</span></Link></div>{connectedAccounts.length === 0 ? <div className="upcoming-empty"><b>No accounts connected yet.</b><p>Connect a Facebook Page to publish scheduled posts automatically.</p><Link className="button button-primary" href="/accounts">Connect an account <span>↗</span></Link></div> : <div className="connected-list">{connectedAccounts.map((connected) => { const account = accounts.find((item) => item.id === connected.platform); return <div className="connected-row" key={connected.id}><span className="account-icon" style={{ "--account-color": account?.color } as React.CSSProperties}>{account?.icon ?? "•"}</span><span className="connected-text"><b>{connected.account_name}</b><small>{account?.label ?? connected.platform} · {connected.account_type}</small></span><span className="connection-state"><i /> Connected</span></div>; })}</div>}</section></div></>}
     {section === "calendar" && scheduleCalendar}
     {section === "content" && <section className="panel library-panel"><div className="library-toolbar"><div><span className="calendar-month-label">YOUR LITTLE CONTENT CORNER</span><h2>All your content</h2><p>Keep your campaign moments neat, tidy, and right where you need them.</p></div><span className="library-total">{media.length} {media.length === 1 ? "ITEM" : "ITEMS"}</span></div><p className="library-session-note">Files you upload are stored securely in your workspace. This list currently shows uploads from this browser session.</p><div className="library-search"><Icon name="search" size={17} /><input placeholder="Find a photo or video..." value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="library-grid">{filteredMedia.map((item) => <article className="library-card" key={item.id}><div className="library-image">{item.kind === "image" ? <Image src={item.url} alt={item.name} fill sizes="(max-width: 700px) 33vw, 180px" unoptimized /> : <video src={item.url} muted aria-label={item.name} />}<span className="library-format">{item.kind === "video" ? "VIDEO" : "PHOTO"}</span><button className="library-delete" aria-label={`Hide ${item.name} from this list`} title="Hide from this list" onClick={() => onRemoveMedia(item.id)}>⋯</button></div><div className="library-card-meta"><b>{item.name}</b><span>Uploaded this session</span></div></article>)}<label className="library-add-tile"><Icon name="plus" size={22} /><b>Add more content</b><span>Images and videos</span><input className="file-picker-input" aria-label="Add more content" type="file" accept="image/*,video/*" multiple onChange={onUploadChange} /></label></div></section>}
-    {section === "accounts" && <SocialAccountsSection setNotice={setNotice} />}
+    {section === "accounts" && <AccountsSection user={currentUser} setNotice={setNotice} />}
     {section === "ai-captions" && <section className="panel ai-demo-panel"><div className="ai-demo-spark">✦</div><span className="calendar-month-label">PLATFORM-SPECIFIC DRAFTS</span><h2>Generate captions and hashtags</h2><p>Each selected channel gets its own draft. Review every detail before using it.</p><form className="ai-generator-form" onSubmit={generateCaptions}><label><span>WHAT IS THE POST ABOUT?</span><textarea required maxLength={500} value={captionTopic} onChange={(event) => setCaptionTopic(event.target.value)} placeholder="Describe the announcement, product, event, or story." /></label><label><span>WHO IS IT FOR?</span><input required maxLength={300} value={captionAudience} onChange={(event) => setCaptionAudience(event.target.value)} placeholder="e.g. university students" /></label><label><span>LANGUAGE</span><select value={captionLanguage} onChange={(event) => setCaptionLanguage(event.target.value)}><option>English</option><option>Urdu</option><option>English and Urdu</option></select></label><label><span>FACTS AND BRAND NOTES</span><textarea maxLength={2000} value={captionInstructions} onChange={(event) => setCaptionInstructions(event.target.value)} placeholder="Verified details, tone, required wording, or anything the AI must not assume." /></label><fieldset><legend>PLATFORMS</legend><div className="ai-platform-choices">{accounts.map((account) => <label key={account.id}><input type="checkbox" checked={captionPlatforms.includes(account.id)} onChange={() => toggleCaptionPlatform(account.id)} /><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span>{account.label}</label>)}</div></fieldset><button className="button button-primary" type="submit" disabled={captionPending}>{captionPending ? "Generating drafts…" : "Generate drafts"}</button></form>{captionError && <p className="ai-generator-error" role="alert">{captionError}</p>}{captionDrafts.length > 0 && <div className="ai-generated-list" aria-live="polite">{captionDrafts.map((draft) => { const account = accounts.find((item) => item.id === draft.platform); const hashtags = draft.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" "); return <article className="ai-generated-draft" key={draft.platform}><div><span>{account?.label ?? draft.platform}</span><button type="button" onClick={() => navigator.clipboard.writeText(`${draft.caption}\n\n${hashtags}`).then(() => setNotice(`${account?.label ?? "Caption"} draft copied.`)).catch(() => setNotice("Clipboard access is unavailable in this browser."))}>Copy</button></div><p>{draft.caption}</p>{hashtags && <small>{hashtags}</small>}</article>; })}</div>}<span className="ai-note">Generated drafts are suggestions. Verify all facts and platform rules before publishing.</span></section>}
     {section === "analytics" && <div className="analytics-layout"><section className="panel analytics-chart"><div className="section-card-heading"><div><span className="calendar-month-label">PUBLISHING SUMMARY</span><h2>Your posts by status</h2><p>Counts from every post scheduled in this workspace.</p></div></div><div className="analytics-status-grid">{(["scheduled", "publishing", "published", "failed"] as const).map((key) => <div key={key} className={`analytics-status analytics-${key}`}><b>{statusCounts[key]}</b><span>{publishStatusLabel[key]}</span></div>)}</div><div className="analytics-platform-list"><span className="calendar-month-label">POSTS PER CHANNEL</span>{accounts.map((account) => <div key={account.id} className="analytics-platform-row"><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span><span>{account.label}</span><b>{posts.filter((post) => post.platform.includes(account.id)).length}</b></div>)}</div></section><section className="panel best-time-card"><span className="calendar-month-label">PLATFORM INSIGHTS</span><h2>Reach and engagement</h2><p>Reach, impressions and engagement will appear here once platform insights are connected. Nothing on this page is estimated.</p><Link className="button button-outline" href="/accounts">Review connected accounts ↗</Link></section></div>}
     {section === "team" && <TeamSection user={currentUser} setNotice={setNotice} />}
     {section === "settings" && <section className="panel settings-panel"><span className="calendar-month-label">ACCOUNT SECURITY</span><h2>Change your password</h2><p>This updates your Content-Flow password only. It does not change your email account password.</p><form className="settings-form password-change-form" onSubmit={handlePasswordChange}><label><span>CURRENT CONTENT-FLOW PASSWORD</span><input type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label><span>NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters.</small></label><label><span>CONFIRM NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><button className="button button-primary settings-save" type="submit" disabled={passwordChangePending}>{passwordChangePending ? "Updating..." : "Update password"}</button>{passwordChangeMessage && <p className={`password-change-message ${passwordChangeError ? "password-change-error" : "password-change-success"}`} role={passwordChangeError ? "alert" : "status"}>{passwordChangeMessage}</p>}</form></section>}
     {section !== "dashboard" && section !== "calendar" && section !== "content" && section !== "accounts" && section !== "ai-captions" && section !== "analytics" && section !== "team" && section !== "settings" && <><section className="panel upcoming-panel"><div className="section-card-heading"><div><span className="calendar-month-label">THE GOOD THINGS, COMING UP</span><h2>On your calendar <span className="post-count-pill">{upcoming.length}</span></h2></div><Link href="/calendar">See everything <span>↗</span></Link></div>{upcoming.length ? <div className="upcoming-list">{upcoming.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</div> : <div className="upcoming-empty"><div className="empty-sun">✳</div><b>A fresh page, ready for you.</b><p>Your next posts will live here once you&apos;ve planned them.</p><Link className="button button-primary" href="/bulk-schedule">Schedule your first batch <span>↗</span></Link></div>}</section><section className="panel schedule-overview-list"><div className="library-toolbar"><div><span className="calendar-month-label">SAVED TO YOUR WORKSPACE</span><h2>Planned posts</h2></div><span className="library-total">{posts.length} POSTS</span></div><div className="schedule-list-toolbar"><span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a post..." /></span><Link className="button button-outline" href="/bulk-schedule">＋ Plan more posts</Link></div>{filteredPosts.length === 0 ? <div className="upcoming-empty"><b>Nothing queued up just yet.</b><p>Posts you schedule are saved to your workspace and will appear here.</p></div> : filteredPosts.map((post) => <UpcomingRow key={post.id} post={post} accounts={accounts} onRemove={() => onRemove(post.id)} />)}</section></>}
   </>;
-}
-
-function SocialAccountsSection({ setNotice }: { setNotice: (notice: string) => void }) {
-  const [providerStatus, setProviderStatus] = useState<SocialProviderStatus | null>(null);
-  const [accountsLoading, setAccountsLoading] = useState(true);
-  const [accountsError, setAccountsError] = useState("");
-  const [disconnectingId, setDisconnectingId] = useState("");
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const query = new URLSearchParams(window.location.search);
-    const oauthResult = query.get("social");
-    if (oauthResult) {
-      const messages: Record<string, string> = {
-        connected: "Meta connected. Authorized Facebook Pages and linked Instagram professional accounts are listed below.",
-        invalid_state: "The Meta sign-in could not be verified. Please connect again.",
-        cancelled: "Meta sign-in was cancelled.",
-        no_accounts: "Meta authorized successfully, but no Facebook Pages or linked Instagram professional accounts were found.",
-        connect_failed: "Meta could not connect. Check your app permissions and try again.",
-      };
-      setNotice(messages[oauthResult] ?? "Meta sign-in did not complete.");
-      query.delete("social");
-      const cleanUrl = `${window.location.pathname}${query.toString() ? `?${query}` : ""}${window.location.hash}`;
-      window.history.replaceState(window.history.state, "", cleanUrl);
-    }
-
-    async function loadMetaAccounts() {
-      setAccountsLoading(true);
-      setAccountsError("");
-      try {
-        const response = await fetch(`${apiUrl}/api/social/providers`, {
-          credentials: "include",
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to load social account connections"));
-        const result: unknown = await response.json();
-        if (!Array.isArray(result)) throw new Error("The server returned an invalid social provider list.");
-        const meta = result.find((item): item is SocialProviderStatus =>
-          typeof item === "object" && item !== null
-          && "provider" in item && item.provider === "meta"
-          && "configured" in item && typeof item.configured === "boolean"
-          && "publisher_enabled" in item && typeof item.publisher_enabled === "boolean"
-          && "accounts" in item && Array.isArray(item.accounts),
-        );
-        if (!meta) throw new Error("The server did not return Meta connection status.");
-        const connectedAccounts = meta.accounts.filter((item): item is ConnectedSocialAccount =>
-          typeof item === "object" && item !== null
-          && "id" in item && typeof item.id === "string"
-          && "account_id" in item && typeof item.account_id === "string"
-          && "platform" in item && typeof item.platform === "string"
-          && "account_name" in item && typeof item.account_name === "string"
-          && "account_type" in item && typeof item.account_type === "string",
-        );
-        if (connectedAccounts.length !== meta.accounts.length) {
-          throw new Error("The server returned an invalid Meta account.");
-        }
-        setProviderStatus({ ...meta, accounts: connectedAccounts });
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setAccountsError(error instanceof Error ? error.message : "Could not load connected accounts.");
-      } finally {
-        if (!controller.signal.aborted) setAccountsLoading(false);
-      }
-    }
-
-    void loadMetaAccounts();
-    return () => controller.abort();
-  }, [setNotice]);
-
-  function connectMeta() {
-    setNotice("Facebook and Instagram connections are not set up on this server yet. Ask your Content-Flow administrator to configure Meta sign-in.");
-  }
-
-  function metaConnectControl(label: string) {
-    if (providerStatus?.configured) {
-      return <a className="button button-outline" href={`${apiUrl}/api/social/oauth/meta/start`}>{label}</a>;
-    }
-    return <button className="button button-outline" onClick={connectMeta}>{label}</button>;
-  }
-
-  async function disconnectMetaAccount(accountId: string, accountName: string) {
-    setDisconnectingId(accountId);
-    try {
-      const response = await fetch(`${apiUrl}/api/social/accounts/${encodeURIComponent(accountId)}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response, "Unable to disconnect this account"));
-      setProviderStatus((current) => current
-        ? { ...current, accounts: current.accounts.filter((account) => account.id !== accountId) }
-        : current);
-      setNotice(`${accountName} disconnected from this workspace.`);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Unable to disconnect this account.");
-    } finally {
-      setDisconnectingId("");
-    }
-  }
-
-  return <section className="panel manage-accounts-panel">
-    <div className="section-card-heading">
-      <div><span className="calendar-month-label">SOCIAL CONNECTIONS</span><h2>Your authorized accounts</h2><p>Connect Facebook Pages and their linked Instagram professional accounts through Meta sign-in.</p></div>
-      {metaConnectControl("＋ Connect Meta account")}
-    </div>
-    {accountsError && <p className="schedule-load-error" role="alert">{accountsError}</p>}
-    <div className="account-manage-grid">{accounts.map((account) => {
-      const metaPlatform = account.id === "facebook" || account.id === "instagram";
-      const connectedAccounts = providerStatus?.accounts.filter((connected) => connected.platform === account.id) ?? [];
-      const connected = connectedAccounts.length > 0;
-      return <article className="account-manage-card" key={account.id}>
-        <span className="account-icon account-icon-large" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span>
-        <span className={`connection-state ${connected ? "social-connected" : "social-not-connected"}`}><i />{accountsLoading ? "Checking" : connected ? "Connected" : "Not connected"}</span>
-        <h3>{account.label}</h3>
-        {connected ? connectedAccounts.map((connectedAccount) => <div className="social-connected-account" key={connectedAccount.id}>
-          <p>{connectedAccount.account_name} · {connectedAccount.account_type}</p>
-          <button type="button" disabled={disconnectingId === connectedAccount.id} onClick={() => void disconnectMetaAccount(connectedAccount.id, connectedAccount.account_name)}>{disconnectingId === connectedAccount.id ? "Disconnecting…" : "Disconnect"}</button>
-        </div>) : <p>{accountsLoading ? "Loading authorization status…" : metaPlatform ? "Connect through Meta OAuth" : "Not included in this Meta-only setup"}</p>}
-        {metaPlatform
-          ? metaConnectControl(connected ? "Connect another Meta account ↗" : "Connect with Meta ↗")
-          : <button type="button" disabled title="This platform is outside the current Meta-only integration">Available in a later integration</button>}
-      </article>;
-    })}</div>
-    <div className="integration-note"><span>✳</span><span>Meta sign-in can discover Pages available to you and Instagram professional accounts linked to those Pages. Scheduled image posts can be published automatically to a connected Facebook Page. Instagram publishing is not available yet.</span></div>
-  </section>;
 }
 
 function UpcomingRow({ post, accounts, onRemove }: { post: ScheduledPost; accounts: SocialAccount[]; onRemove?: () => void }) {

@@ -205,6 +205,9 @@ def test_every_private_route_requires_a_signed_in_user() -> None:
         ("GET", "/api/health"), ("POST", "/api/auth/register"), ("POST", "/api/auth/login"),
         ("POST", "/api/auth/logout"), ("GET", "/api/social/oauth/{provider}/callback"),
         ("GET", "/api/social/webhook"), ("POST", "/api/social/webhook"), ("GET", "/api/invitations/{token}"),
+        # Meta calls these directly; they are authenticated by Meta's signed_request instead.
+        ("POST", "/api/social/meta/deauthorize"), ("POST", "/api/social/meta/data-deletion"),
+        ("GET", "/api/social/meta/data-deletion/{code}"),
     }
 
     def depends_on_user(dependant) -> bool:  # type: ignore[no-untyped-def]

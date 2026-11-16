@@ -8,21 +8,34 @@ from urllib.parse import urlencode
 
 import httpx
 
-META_GRAPH_VERSION = "v25.0"
+from app import meta_graph
+
+# Only what the product uses, which keeps Meta App Review simpler:
+#   pages_show_list, business_management  find the user's Pages (incl. Business Manager Pages)
+#   pages_read_engagement, read_insights  read Page posts and Page/post insights
+#   pages_manage_posts                    publish to Pages
+#   instagram_basic, instagram_content_publish, instagram_manage_insights
+#                                         find, publish to and read insights of Instagram accounts
+META_SCOPES = (
+    "pages_show_list,business_management,pages_read_engagement,read_insights,pages_manage_posts,"
+    "instagram_basic,instagram_content_publish,instagram_manage_insights"
+)
 
 PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
     "meta": {
         "client_id": "META_APP_ID",
         "client_secret": "META_APP_SECRET",
-        "authorize_url": f"https://www.facebook.com/{META_GRAPH_VERSION}/dialog/oauth",
-        "token_url": f"https://graph.facebook.com/{META_GRAPH_VERSION}/oauth/access_token",
-        "scope": (
-            "pages_show_list,pages_read_engagement,pages_manage_posts,"
-            "pages_manage_engagement,instagram_basic,instagram_content_publish,"
-            "instagram_manage_comments,instagram_manage_insights"
-        ),
+        "scope": META_SCOPES,
     },
 }
+
+
+def _authorize_url() -> str:
+    return f"https://www.facebook.com/{meta_graph.graph_version()}/dialog/oauth"
+
+
+def _token_url() -> str:
+    return meta_graph.graph_url("oauth/access_token")
 
 
 class MetaAPIError(ValueError):
@@ -89,7 +102,7 @@ def build_authorization_url(provider: str, settings: dict[str, str], redirect_ur
         "auth_type": "rerequest",
         "state": state,
     }
-    return f"{settings['authorize_url']}?{urlencode(params)}"
+    return f"{_authorize_url()}?{urlencode(params)}"
 
 
 def _expires_at(payload: dict[str, Any]) -> str | None:
@@ -109,7 +122,7 @@ async def exchange_authorization_code(
         raise ValueError("Only Meta OAuth is enabled in this integration phase.")
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(
-            settings["token_url"],
+            _token_url(),
             params={
                 "client_id": settings["client_id_value"],
                 "client_secret": settings["client_secret_value"],
@@ -124,7 +137,7 @@ async def exchange_authorization_code(
         raise ValueError("The provider did not return an access token.")
     async with httpx.AsyncClient(timeout=30) as client:
         long_lived_response = await client.get(
-            settings["token_url"],
+            _token_url(),
             params={
                 "grant_type": "fb_exchange_token",
                 "client_id": settings["client_id_value"],
@@ -141,54 +154,11 @@ async def exchange_authorization_code(
     return long_lived_payload
 
 
-async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any]) -> list[dict[str, Any]]:
+async def retrieve_connected_accounts(provider: str, token_data: dict[str, Any]) -> dict[str, Any]:
+    """Pages and linked Instagram accounts the signed-in Meta user can manage (see meta_graph)."""
     if provider != "meta":
         raise ValueError("Only Meta account discovery is enabled in this integration phase.")
-    access_token = token_data["access_token"]
-    token_fields = {
-        "access_token": access_token,
-        "refresh_token": token_data.get("refresh_token"),
-        "expires_at": token_data.get("expires_at"),
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(
-            f"https://graph.facebook.com/{META_GRAPH_VERSION}/me/accounts",
-            params={
-                "fields": "id,name,access_token",
-                "access_token": access_token,
-            },
-        )
-        response.raise_for_status()
-        pages = response.json().get("data", [])
-        accounts: list[dict[str, Any]] = []
-        for page in pages:
-            page_token = page.get("access_token") or access_token
-            page_tokens = {**token_fields, "access_token": page_token, "expires_at": None}
-            accounts.append({
-                "platform": "facebook",
-                "account_id": str(page["id"]),
-                "account_name": page.get("name") or "Facebook Page",
-                "account_type": "page",
-                "tokens": page_tokens,
-            })
-            instagram_response = await client.get(
-                f"https://graph.facebook.com/{META_GRAPH_VERSION}/{page['id']}",
-                params={
-                    "fields": "instagram_business_account{id,username}",
-                    "access_token": page_token,
-                },
-            )
-            instagram_response.raise_for_status()
-            instagram = instagram_response.json().get("instagram_business_account")
-            if isinstance(instagram, dict) and instagram.get("id"):
-                accounts.append({
-                    "platform": "instagram",
-                    "account_id": str(instagram["id"]),
-                    "account_name": instagram.get("username") or "Instagram professional account",
-                    "account_type": "professional",
-                    "tokens": page_tokens,
-                })
-        return accounts
+    return await meta_graph.discover_accounts(token_data["access_token"])
 
 
 async def publish_facebook_photo(
@@ -206,7 +176,7 @@ async def publish_facebook_photo(
     with media_path.open("rb") as media_file:
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
-                f"https://graph.facebook.com/{META_GRAPH_VERSION}/{page_id}/photos",
+                meta_graph.graph_url(f"{page_id}/photos"),
                 data={"access_token": access_token, "caption": caption},
                 files={"source": (filename, media_file, media_type)},
             )

@@ -4,6 +4,21 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Facebook and Instagram connections
+- After Meta sign-in you choose which Pages and Instagram accounts to add;
+  nothing is saved until you do. Pages are paginated; Pages your role cannot
+  publish to are flagged. Instagram accounts show followers and linked Page.
+- Connection status (`active` / `needs_reconnect`), "Check connection",
+  reconnect and disconnect. Meta's expired-token errors flag the account.
+- Meta deauthorize and data-deletion callbacks (signed requests verified),
+  with a deletion status URL; required for Meta App Review.
+- Requested permissions trimmed to what the product uses; adds `read_insights`
+  (analytics) and `business_management` (Business Manager Pages).
+- New Graph client (`app/meta_graph.py`, API v26.0, configurable with
+  `META_GRAPH_VERSION`): Facebook text, photo, multi-photo and video posts;
+  Instagram image, Reels and carousels with container status polling and the
+  daily publishing limit check. Errors never contain request URLs or tokens.
+
 ### Workspaces and roles
 - Workspaces own all content, schedules and social accounts; users can belong to
   several (agency staff, clients). Roles: owner (exactly one), admin, editor, client.

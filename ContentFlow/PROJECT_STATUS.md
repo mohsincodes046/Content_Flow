@@ -13,7 +13,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Deployment proxy and Render Blueprint | ✅ | Not deployed; Render deploy branch unconfirmed |
 | SQLite → PostgreSQL support and migration tooling | ✅ | Paid database not provisioned (awaiting approval) |
 | Workspaces, roles, client management | ✅ | Invitations by shareable link (email delivery not configured) |
-| Meta connection: Pages, Instagram, reconnect | 🟡 | OAuth and discovery exist; selection/reconnect pending |
+| Meta connection: Pages, Instagram, reconnect | ✅ | Live sign-in needs your Meta app + test Page (manual test) |
 | Content drafts, platform versions, media library | ⏳ | |
 | Client approval workflow | ⏳ | |
 | Facebook and Instagram publishing | 🟡 | Scheduled Facebook Page images only |
