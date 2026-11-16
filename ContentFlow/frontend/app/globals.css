@@ -1004,3 +1004,11 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
 .metric-tile small { color: #71717A; font-size: 10px; line-height: 1.4; }
 .metric-unavailable b { color: #71717A; font-size: 13px; }
 .analytics-footnote { margin: 0; color: #71717A; font-size: 11px; }
+.legal-page { min-height: 100vh; padding: 24px 16px 60px; background: var(--canvas); color: #E4E4E7; }
+.legal-nav { max-width: 760px; margin: 0 auto 28px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; }
+.legal-nav a, .legal-page article a { color: #A78BFA; }
+.legal-page article { max-width: 760px; margin: 0 auto; line-height: 1.7; font-size: 14px; }
+.legal-page h1 { font-family: var(--serif); font-weight: 400; font-size: 32px; margin: 0 0 4px; }
+.legal-page h2 { margin: 26px 0 6px; font-size: 16px; }
+.legal-updated { color: #A1A1AA; font-size: 12px; }
+.legal-page li { margin: 4px 0; }

@@ -49,7 +49,7 @@ export default function Home() {
         <div className="feature-heading"><span className="eyebrow">LESS BUSYWORK, MORE YOU</span><h2>Your whole social world.<br /><span>One easy rhythm.</span></h2></div>
         <div className="feature-cards">{benefits.map((item, i) => <article className="feature-card" key={item.title}><div className={`feature-icon icon-${i}`}>{item.icon}</div><h3>{item.title}</h3><p>{item.copy}</p><Link href="/dashboard">Explore the dashboard <span>↗</span></Link></article>)}</div>
       </section>
-      <footer className="marketing-footer"><Logo /><span>Made for what you make. © 2026 Content-Flow</span></footer>
+      <footer className="marketing-footer"><Logo /><span><Link href="/privacy">Privacy</Link> · <Link href="/terms">Terms</Link> · <Link href="/data-deletion">Data deletion</Link> · © 2026 Content-Flow</span></footer>
     </main>
   );
 }
