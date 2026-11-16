@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 from uuid import uuid4
@@ -13,7 +12,7 @@ from fastapi import Cookie, HTTPException, Request, Response, status
 from pwdlib import PasswordHash
 
 from app.config import SESSION_COOKIE, SESSION_LIFETIME, env_int
-from app.database import connect_database, utc_now
+from app.database import DatabaseConnection, Row, connect_database, utc_now
 from app.schemas import SessionResponse
 
 PASSWORD_HASHER = PasswordHash.recommended()
@@ -54,7 +53,7 @@ def client_ip(request: Request) -> str:
 
 
 def count_recent_events(
-    connection: sqlite3.Connection, bucket: str, subject: str, window: timedelta, now: datetime
+    connection: DatabaseConnection, bucket: str, subject: str, window: timedelta, now: datetime
 ) -> tuple[int, Optional[str]]:
     row = connection.execute(
         """
@@ -89,7 +88,7 @@ def check_rate_limit(
     concurrent requests cannot both pass the final slot."""
     now = datetime.now(timezone.utc)
     with connect_database() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.lock_for_write()
         connection.execute(
             "DELETE FROM rate_limit_events WHERE created_at < ?",
             ((now - RATE_LIMIT_RETENTION).isoformat(),),
@@ -148,7 +147,7 @@ def create_session(user_id: str, response: Response) -> None:
 
 def get_current_user(
     session_token: Annotated[Optional[str], Cookie(alias=SESSION_COOKIE)] = None,
-) -> sqlite3.Row:
+) -> Row:
     if not session_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -176,7 +175,7 @@ def get_current_user(
     return row
 
 
-def session_response(user: sqlite3.Row) -> SessionResponse:
+def session_response(user: Row) -> SessionResponse:
     return SessionResponse(
         id=user["id"],
         email=user["email"],

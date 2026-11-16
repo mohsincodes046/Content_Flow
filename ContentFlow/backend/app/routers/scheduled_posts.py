@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, time, timedelta, timezone
 from typing import Annotated, Optional
 from uuid import uuid4
@@ -9,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.config import Platform
-from app.database import connect_database, utc_now
+from app.database import Row, connect_database, utc_now
 from app.publisher import scheduled_create_utc
 from app.schemas import ScheduledPostBatchCreate, ScheduledPostDateUpdate, ScheduledPostResponse
 from app.security import get_current_user
@@ -17,7 +16,7 @@ from app.security import get_current_user
 router = APIRouter()
 
 
-def scheduled_post_from_row(row: sqlite3.Row) -> ScheduledPostResponse:
+def scheduled_post_from_row(row: Row) -> ScheduledPostResponse:
     return ScheduledPostResponse(
         id=row["id"],
         media_name=row["media_name"],
@@ -37,7 +36,7 @@ def scheduled_post_conflicts(
     platforms: list[Platform],
     scheduled_date: str,
     scheduled_time: str,
-    existing_rows: list[sqlite3.Row],
+    existing_rows: list[Row],
     *,
     exclude_id: Optional[str] = None,
 ) -> bool:
@@ -55,7 +54,7 @@ def scheduled_post_conflicts(
 
 @router.get("/api/scheduled-posts", response_model=list[ScheduledPostResponse])
 def list_scheduled_posts(
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> list[ScheduledPostResponse]:
     with connect_database() as connection:
         rows = connection.execute(
@@ -76,7 +75,7 @@ def list_scheduled_posts(
 )
 def create_scheduled_posts(
     payload: ScheduledPostBatchCreate,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> list[ScheduledPostResponse]:
     incoming = payload.posts
     for post in incoming:
@@ -144,12 +143,12 @@ def create_scheduled_posts(
                 )
 
     with connect_database() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.lock_for_write()
         existing_rows = connection.execute(
             "SELECT * FROM scheduled_posts WHERE user_id = ?",
             (user["id"],),
         ).fetchall()
-        response_rows: list[sqlite3.Row] = []
+        response_rows: list[Row] = []
 
         for post in incoming:
             scheduled_date = post.date.isoformat()
@@ -222,10 +221,10 @@ def create_scheduled_posts(
 def reschedule_post(
     post_id: str,
     payload: ScheduledPostDateUpdate,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> ScheduledPostResponse:
     with connect_database() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.lock_for_write()
         row = connection.execute(
             "SELECT * FROM scheduled_posts WHERE id = ? AND user_id = ?",
             (post_id, user["id"]),
@@ -286,7 +285,7 @@ def reschedule_post(
 @router.delete("/api/scheduled-posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scheduled_post(
     post_id: str,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> Response:
     with connect_database() as connection:
         cursor = connection.execute(

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.database import connect_database, utc_now
+from app.database import Row, connect_database, utc_now
 from app.schemas import AssetResponse, SubmissionCreate, SubmissionResponse
 from app.security import get_current_user
 
@@ -55,7 +54,7 @@ def get_assets(asset_ids: list[str], user_id: str) -> list[AssetResponse]:
 
 
 def submission_from_row(
-    row: sqlite3.Row,
+    row: Row,
     assets: list[AssetResponse],
 ) -> SubmissionResponse:
     return SubmissionResponse(
@@ -79,7 +78,7 @@ def submission_from_row(
 )
 def create_submission(
     payload: SubmissionCreate,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> SubmissionResponse:
     assets = get_assets(payload.asset_ids, user["id"])
     submission_id = str(uuid4())
@@ -132,7 +131,7 @@ def create_submission(
 
 @router.get("/api/submissions", response_model=list[SubmissionResponse])
 def list_submissions(
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> list[SubmissionResponse]:
     with connect_database() as connection:
@@ -169,7 +168,7 @@ def list_submissions(
 @router.get("/api/submissions/{submission_id}", response_model=SubmissionResponse)
 def read_submission(
     submission_id: str,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> SubmissionResponse:
     with connect_database() as connection:
         row = connection.execute(

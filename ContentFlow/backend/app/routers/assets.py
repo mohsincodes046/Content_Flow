@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
@@ -9,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app import config
 from app.config import ALLOWED_MEDIA_TYPES, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES
-from app.database import connect_database, utc_now
+from app.database import Row, connect_database, utc_now
 from app.schemas import AssetResponse
 from app.security import get_current_user
 
@@ -23,7 +22,7 @@ router = APIRouter()
 )
 async def upload_asset(
     file: Annotated[UploadFile, File()],
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> AssetResponse:
     media_type = file.content_type or ""
     if not media_type.startswith(ALLOWED_MEDIA_TYPES):

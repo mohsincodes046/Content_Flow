@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -9,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from app import ai as ai_service
-from app.database import connect_database
+from app.database import Row, connect_database
 from app.schemas import AIUsageResponse, CaptionDrafts, CaptionGenerationRequest, CaptionGenerationResponse
 from app.security import ai_limits, check_rate_limit, count_recent_events, get_current_user
 
@@ -19,7 +18,7 @@ router = APIRouter()
 @router.post("/api/ai/captions", response_model=CaptionGenerationResponse)
 async def generate_platform_captions(
     payload: CaptionGenerationRequest,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> CaptionGenerationResponse:
     provider = os.environ.get("CONTENT_FLOW_AI_PROVIDER", "claude").strip().lower()
     provider_config = {
@@ -85,7 +84,7 @@ async def generate_platform_captions(
 
 
 @router.get("/api/ai/usage", response_model=AIUsageResponse)
-def ai_usage(user: Annotated[sqlite3.Row, Depends(get_current_user)]) -> AIUsageResponse:
+def ai_usage(user: Annotated[Row, Depends(get_current_user)]) -> AIUsageResponse:
     _, per_day = ai_limits()
     now = datetime.now(timezone.utc)
     with connect_database() as connection:

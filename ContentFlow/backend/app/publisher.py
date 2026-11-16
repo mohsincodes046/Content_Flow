@@ -3,21 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 
 import httpx
 
 from app import config, social_oauth
 from app.config import publisher_interval_seconds
-from app.database import connect_database
+from app.database import Row, connect_database
 from app.schemas import ScheduledPostCreate
 from app.security import token_cipher
 
 logger = logging.getLogger(__name__)
 
 
-def scheduled_post_utc(row: sqlite3.Row) -> datetime:
+def scheduled_post_utc(row: Row) -> datetime:
     local_datetime = datetime.combine(
         date.fromisoformat(row["scheduled_date"]),
         time.fromisoformat(row["scheduled_time"]),
@@ -37,9 +36,9 @@ async def publish_due_scheduled_posts(now: datetime | None = None) -> None:
     if current_time.tzinfo is None:
         raise ValueError("Publisher time must be timezone-aware.")
     current_time = current_time.astimezone(timezone.utc)
-    claimed_posts: list[sqlite3.Row] = []
+    claimed_posts: list[Row] = []
     with connect_database() as connection:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.lock_for_write()
         candidates = connection.execute(
             """
             SELECT * FROM scheduled_posts

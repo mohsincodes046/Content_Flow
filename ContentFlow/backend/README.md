@@ -47,6 +47,50 @@ Application logs go to stderr with a request ID on every line. Set
 carries an `X-Request-ID` header, and unexpected errors return a JSON 500 that
 includes the same ID, so a user-reported error can be matched to the log.
 
+## Database and migrations
+
+The API uses SQLite (`backend\data\content_flow.sqlite3`) unless
+`CONTENT_FLOW_DATABASE_URL` is set to a PostgreSQL URL. Both run the same code
+and the same Alembic migrations (`app/migrations/versions/`). Timestamps are
+stored as ISO-8601 text on both, so queries behave identically.
+
+```powershell
+python -m app.migrate status    # current revision vs. what the code needs
+python -m app.migrate backup    # SQLite: verified online backup to data\backups\
+python -m app.migrate upgrade   # SQLite: backs up first, then upgrades
+```
+
+On startup the API creates the schema in an empty database and stamps a
+pre-Alembic SQLite database as the baseline (additive only). If the database
+is behind the code, the API refuses to start rather than migrating unattended;
+run `python -m app.migrate upgrade`, or set `CONTENT_FLOW_AUTO_MIGRATE=true`
+only where unattended migration is acceptable.
+
+Run the test suite against PostgreSQL by pointing
+`CONTENT_FLOW_TEST_POSTGRES_URL` at a disposable database (its `public`
+schema is dropped before every test). CI runs both SQLite and PostgreSQL.
+
+### Moving data between databases
+
+`python -m app.transfer` copies every table and then verifies each one by row
+count and a SHA-256 over all row contents. It opens a SQLite source read-only,
+refuses a target that is not empty or not at the same revision, writes in one
+transaction, and never overwrites an existing SQLite file.
+
+```powershell
+python -m app.transfer --source sqlite:///data/content_flow.sqlite3 --target <postgres-url> --dry-run
+python -m app.transfer --source sqlite:///data/content_flow.sqlite3 --target <postgres-url>
+python -m app.transfer --source <postgres-url> --target sqlite:///data/rollback.sqlite3   # rollback copy
+python -m app.transfer --source <a> --target <b> --verify-only
+```
+
+Production cutover (requires approval; see the migration plan):
+1. Turn the publisher off; stop writes.
+2. `python -m app.migrate backup` and keep an off-Render copy of the file.
+3. Transfer with `--dry-run`, then for real; every table must report identical.
+4. Set `CONTENT_FLOW_DATABASE_URL`, redeploy, smoke-test, re-enable the publisher.
+5. Rollback before new writes: unset the URL. After writes: transfer back to a new SQLite file.
+
 ## AI captions
 
 The authenticated `POST /api/ai/captions` endpoint generates a separate caption

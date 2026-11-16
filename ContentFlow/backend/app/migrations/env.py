@@ -1,0 +1,32 @@
+"""Alembic environment: uses the application's own engine (SQLite or PostgreSQL)."""
+from __future__ import annotations
+
+from alembic import context
+
+from app.database import get_engine
+
+
+def run_migrations() -> None:
+    connectable = context.config.attributes.get("connection")
+    if connectable is not None:
+        _run(connectable)
+        return
+    with get_engine().connect() as connection:
+        _run(connection)
+
+
+def _run(connection) -> None:  # type: ignore[no-untyped-def]
+    context.configure(
+        connection=connection,
+        target_metadata=None,
+        # SQLite cannot ALTER most constraints; batch mode rebuilds tables instead.
+        render_as_batch=connection.dialect.name == "sqlite",
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+if context.is_offline_mode():
+    raise RuntimeError("Offline (SQL script) migrations are not supported; run against a database.")
+run_migrations()

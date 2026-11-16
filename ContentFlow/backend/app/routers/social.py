@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 from urllib.parse import urlsplit
@@ -15,7 +14,7 @@ from fastapi.responses import RedirectResponse
 
 from app import social_oauth
 from app.config import public_api_url, public_frontend_url, publisher_is_enabled
-from app.database import connect_database, utc_now
+from app.database import Row, connect_database, utc_now
 from app.schemas import SocialAccountResponse, SocialProviderStatus
 from app.security import get_current_user, token_cipher, token_digest
 
@@ -25,7 +24,7 @@ router = APIRouter()
 
 @router.get("/api/social/providers", response_model=list[SocialProviderStatus])
 def list_social_providers(
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> list[SocialProviderStatus]:
     with connect_database() as connection:
         rows = connection.execute(
@@ -68,7 +67,7 @@ def list_social_providers(
 @router.get("/api/social/oauth/{provider}/start")
 def start_social_oauth(
     provider: str,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> RedirectResponse:
     try:
         settings = social_oauth.get_provider_settings(provider)
@@ -180,7 +179,7 @@ async def finish_social_oauth(
 @router.delete("/api/social/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
 def disconnect_social_account(
     account_id: str,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> Response:
     with connect_database() as connection:
         result = connection.execute(

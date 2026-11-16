@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import timedelta
 from typing import Annotated, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 
 from app.config import SESSION_COOKIE, env_int
-from app.database import connect_database, utc_now
+from app.database import Row, connect_database, utc_now
 from app.schemas import LoginCreate, PasswordChange, RegistrationCreate, SessionResponse
 from app.security import (
     DUMMY_PASSWORD_HASH,
@@ -70,8 +70,11 @@ def register(payload: RegistrationCreate, request: Request, response: Response) 
                 """,
                 (user_id,),
             ).fetchone()
-    except sqlite3.IntegrityError as error:
-        if "users.email" in str(error).lower() or "unique constraint failed: users.email" in str(error).lower():
+    except IntegrityError as error:
+        # Works on SQLite and PostgreSQL: decide by looking, not by parsing driver messages.
+        with connect_database() as connection:
+            exists = connection.execute("SELECT 1 FROM users WHERE lower(email) = ?", (email,)).fetchone()
+        if exists is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email already exists.",
@@ -122,7 +125,7 @@ def login(payload: LoginCreate, request: Request, response: Response) -> Session
 
 @router.get("/api/auth/me", response_model=SessionResponse)
 def current_session(
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
 ) -> SessionResponse:
     return session_response(user)
 
@@ -145,7 +148,7 @@ def logout(
 @router.post("/api/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
 def change_password(
     payload: PasswordChange,
-    user: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(get_current_user)],
     session_token: Annotated[Optional[str], Cookie(alias=SESSION_COOKIE)] = None,
 ) -> Response:
     if not session_token:
