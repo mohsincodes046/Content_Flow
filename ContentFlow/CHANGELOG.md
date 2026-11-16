@@ -4,6 +4,16 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Workspaces and roles
+- Workspaces own all content, schedules and social accounts; users can belong to
+  several (agency staff, clients). Roles: owner (exactly one), admin, editor, client.
+- Invitations with single-use, 7-day links; invited people join without creating
+  their own workspace. Member role changes, removal, leaving, ownership transfer.
+- Every request re-checks membership; other workspaces' items return 404.
+- Workspace switcher, real Team page, invitation page; clients only see review.
+- Migration `0002_workspace_tenancy` (backup-first, verified, rehearsed on a copy
+  of the real database). Login no longer requires owning a workspace.
+
 ### Deployment
 - `/api` is proxied through the Next.js app (same-origin session cookie) over
   Render's private network; proxied uploads allowed up to 52 MB.

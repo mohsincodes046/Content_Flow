@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.database import Row, connect_database, utc_now
 from app.schemas import AssetResponse, SubmissionCreate, SubmissionResponse
-from app.security import get_current_user
+from app.security import require_content_role
 
 router = APIRouter()
 
 
-def get_assets(asset_ids: list[str], user_id: str) -> list[AssetResponse]:
+def get_assets(asset_ids: list[str], workspace_id: str) -> list[AssetResponse]:
     if not asset_ids:
         return []
 
@@ -23,9 +23,9 @@ def get_assets(asset_ids: list[str], user_id: str) -> list[AssetResponse]:
             f"""
             SELECT id, filename, media_type, size, submission_id
             FROM assets
-            WHERE id IN ({placeholders}) AND user_id = ?
+            WHERE id IN ({placeholders}) AND workspace_id = ?
             """,
-            [*asset_ids, user_id],
+            [*asset_ids, workspace_id],
         ).fetchall()
 
     by_id = {row["id"]: row for row in rows}
@@ -78,9 +78,9 @@ def submission_from_row(
 )
 def create_submission(
     payload: SubmissionCreate,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> SubmissionResponse:
-    assets = get_assets(payload.asset_ids, user["id"])
+    assets = get_assets(payload.asset_ids, user["workspace_id"])
     submission_id = str(uuid4())
     created_at = utc_now()
 
@@ -89,9 +89,9 @@ def create_submission(
             """
             INSERT INTO submissions (
                 id, campaign, audience, instructions, language,
-                platforms_json, status, created_at, user_id
+                platforms_json, status, created_at, user_id, workspace_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?)
             """,
             (
                 submission_id,
@@ -102,6 +102,7 @@ def create_submission(
                 json.dumps(payload.platforms),
                 created_at,
                 user["id"],
+                user["workspace_id"],
             ),
         )
         if payload.asset_ids:
@@ -131,13 +132,13 @@ def create_submission(
 
 @router.get("/api/submissions", response_model=list[SubmissionResponse])
 def list_submissions(
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> list[SubmissionResponse]:
     with connect_database() as connection:
         rows = connection.execute(
-            "SELECT * FROM submissions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-            (user["id"], limit),
+            "SELECT * FROM submissions WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user["workspace_id"], limit),
         ).fetchall()
 
         result: list[SubmissionResponse] = []
@@ -168,12 +169,12 @@ def list_submissions(
 @router.get("/api/submissions/{submission_id}", response_model=SubmissionResponse)
 def read_submission(
     submission_id: str,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> SubmissionResponse:
     with connect_database() as connection:
         row = connection.execute(
-            "SELECT * FROM submissions WHERE id = ? AND user_id = ?",
-            (submission_id, user["id"]),
+            "SELECT * FROM submissions WHERE id = ? AND workspace_id = ?",
+            (submission_id, user["workspace_id"]),
         ).fetchone()
         if row is None:
             raise HTTPException(

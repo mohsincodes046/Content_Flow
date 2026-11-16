@@ -17,10 +17,12 @@ from app.security import (
     client_ip,
     create_session,
     get_current_user,
+    load_session_user,
     record_rate_limit_event,
     session_response,
     token_digest,
 )
+from app.workspaces import accept_invitation, create_workspace
 
 router = APIRouter()
 
@@ -35,7 +37,6 @@ def register(payload: RegistrationCreate, request: Request, response: Response) 
         detail="Too many accounts were created from this network. Please try again later.",
     )
     user_id = str(uuid4())
-    workspace_id = str(uuid4())
     created_at = utc_now()
     email = str(payload.email).strip().lower()
     try:
@@ -53,23 +54,11 @@ def register(payload: RegistrationCreate, request: Request, response: Response) 
                     created_at,
                 ),
             )
-            connection.execute(
-                "INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)",
-                (workspace_id, payload.workspace_name, created_at),
-            )
-            connection.execute(
-                "INSERT INTO memberships (user_id, workspace_id, role) VALUES (?, ?, 'owner')",
-                (user_id, workspace_id),
-            )
-            user = connection.execute(
-                """
-                SELECT users.id, users.email, users.full_name, workspaces.name AS workspace_name
-                FROM users JOIN memberships ON memberships.user_id = users.id
-                JOIN workspaces ON workspaces.id = memberships.workspace_id
-                WHERE users.id = ? AND memberships.role = 'owner'
-                """,
-                (user_id,),
-            ).fetchone()
+            if payload.invitation_token:
+                # Joining a client's or agency's workspace: no workspace of one's own.
+                workspace_id = accept_invitation(connection, payload.invitation_token, user_id, email)
+            else:
+                workspace_id = create_workspace(connection, user_id, payload.workspace_name or "")
     except IntegrityError as error:
         # Works on SQLite and PostgreSQL: decide by looking, not by parsing driver messages.
         with connect_database() as connection:
@@ -80,10 +69,8 @@ def register(payload: RegistrationCreate, request: Request, response: Response) 
                 detail="An account with this email already exists.",
             ) from error
         raise
-    if user is None:
-        raise RuntimeError("The newly created account could not be loaded.")
-    create_session(user_id, response)
-    return session_response(user)
+    session_id = create_session(user_id, response, workspace_id)
+    return session_response(load_session_user(session_id))
 
 
 @router.post("/api/auth/login", response_model=SessionResponse)
@@ -98,15 +85,10 @@ def login(payload: LoginCreate, request: Request, response: Response) -> Session
     failed_limit = env_int("CONTENT_FLOW_LOGIN_FAILURES_PER_EMAIL_LIMIT", 5)
     check_rate_limit("login_failed_email", email, failed_limit, login_window, record=False, detail=too_many)
     with connect_database() as connection:
+        # Any user can sign in, whether they own a workspace, were invited to one,
+        # or currently belong to none.
         user = connection.execute(
-            """
-            SELECT users.id, users.email, users.full_name, users.password_hash,
-                   workspaces.name AS workspace_name
-            FROM users JOIN memberships ON memberships.user_id = users.id
-            JOIN workspaces ON workspaces.id = memberships.workspace_id
-            WHERE users.email = ? AND memberships.role = 'owner'
-            LIMIT 1
-            """,
+            "SELECT id, password_hash FROM users WHERE email = ?",
             (email,),
         ).fetchone()
 
@@ -119,8 +101,8 @@ def login(payload: LoginCreate, request: Request, response: Response) -> Session
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email or password is incorrect.",
         )
-    create_session(user["id"], response)
-    return session_response(user)
+    session_id = create_session(user["id"], response)
+    return session_response(load_session_user(session_id))
 
 
 @router.get("/api/auth/me", response_model=SessionResponse)

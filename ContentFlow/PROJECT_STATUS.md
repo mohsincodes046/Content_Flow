@@ -12,7 +12,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Registration, login, sessions, password change | ✅ | Rate limited |
 | Deployment proxy and Render Blueprint | ✅ | Not deployed; Render deploy branch unconfirmed |
 | SQLite → PostgreSQL support and migration tooling | ✅ | Paid database not provisioned (awaiting approval) |
-| Workspaces, roles, client management | ⏳ | Design approved (`docs/workspace-tenancy.md`) |
+| Workspaces, roles, client management | ✅ | Invitations by shareable link (email delivery not configured) |
 | Meta connection: Pages, Instagram, reconnect | 🟡 | OAuth and discovery exist; selection/reconnect pending |
 | Content drafts, platform versions, media library | ⏳ | |
 | Client approval workflow | ⏳ | |
@@ -27,6 +27,9 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
   and set the Blueprint Path to `ContentFlow/render.yaml`.
 - Approval before provisioning a paid PostgreSQL database.
 - Approval before migrating the real local database to new schema versions.
+  It is at `0001_baseline`; the code needs `0002_workspace_tenancy`, so the
+  local API refuses to start until `python -m app.migrate upgrade` is run
+  (it takes a verified backup first). Rehearsed successfully on a copy.
 
 ## Real data safety
 

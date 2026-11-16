@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from typing import Annotated, Optional
 from uuid import uuid4
 
 from cryptography.fernet import Fernet
-from fastapi import Cookie, HTTPException, Request, Response, status
+from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 from pwdlib import PasswordHash
 
 from app.config import SESSION_COOKIE, SESSION_LIFETIME, env_int
@@ -118,7 +119,8 @@ def ai_limits() -> tuple[int, int]:
     )
 
 
-def create_session(user_id: str, response: Response) -> None:
+def create_session(user_id: str, response: Response, workspace_id: Optional[str] = None) -> str:
+    """Start a session (cookie set on `response`); returns the raw session token."""
     raw_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     expires_at = now + SESSION_LIFETIME
@@ -129,10 +131,10 @@ def create_session(user_id: str, response: Response) -> None:
         )
         connection.execute(
             """
-            INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at, active_workspace_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (str(uuid4()), user_id, token_digest(raw_token), expires_at.isoformat(), now.isoformat()),
+            (str(uuid4()), user_id, token_digest(raw_token), expires_at.isoformat(), now.isoformat(), workspace_id),
         )
     response.set_cookie(
         key=SESSION_COOKIE,
@@ -143,11 +145,41 @@ def create_session(user_id: str, response: Response) -> None:
         samesite="lax",
         path="/",
     )
+    return raw_token
+
+
+def load_session_user(raw_token: str) -> Row:
+    return get_current_user(session_token=raw_token)
+
+
+ROLES = ("owner", "admin", "editor", "client")
+MANAGERS = ("owner", "admin")             # members, settings, social accounts
+CONTENT_ROLES = ("owner", "admin", "editor")  # create, edit and schedule content
+REVIEWERS = ("owner", "admin", "client")  # approve, reject, request changes
+
+
+def user_workspaces(connection: DatabaseConnection, user_id: str) -> list[Row]:
+    return connection.execute(
+        """
+        SELECT workspaces.id, workspaces.name, memberships.role
+        FROM memberships JOIN workspaces ON workspaces.id = memberships.workspace_id
+        WHERE memberships.user_id = ?
+        ORDER BY CASE memberships.role WHEN 'owner' THEN 0 ELSE 1 END, memberships.created_at, workspaces.name
+        """,
+        (user_id,),
+    ).fetchall()
 
 
 def get_current_user(
     session_token: Annotated[Optional[str], Cookie(alias=SESSION_COOKIE)] = None,
 ) -> Row:
+    """The signed-in user and their active workspace.
+
+    Keys: id, email, full_name, session_id, workspace_id, workspace_name, role.
+    The workspace keys are None when the user belongs to no workspace. The
+    membership is re-checked on every request, so a removed member loses access
+    immediately; if the remembered workspace is gone, the next one is used.
+    """
     if not session_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -155,30 +187,92 @@ def get_current_user(
         )
     now = utc_now()
     with connect_database() as connection:
-        row = connection.execute(
+        session = connection.execute(
             """
-            SELECT users.id, users.email, users.full_name, workspaces.name AS workspace_name
-            FROM sessions
-            JOIN users ON users.id = sessions.user_id
-            JOIN memberships ON memberships.user_id = users.id AND memberships.role = 'owner'
-            JOIN workspaces ON workspaces.id = memberships.workspace_id
+            SELECT users.id, users.email, users.full_name, sessions.id AS session_id,
+                   sessions.active_workspace_id
+            FROM sessions JOIN users ON users.id = sessions.user_id
             WHERE sessions.token_hash = ? AND sessions.expires_at > ?
-            LIMIT 1
             """,
             (token_digest(session_token), now),
         ).fetchone()
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Your session has expired. Sign in again.",
-        )
-    return row
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your session has expired. Sign in again.",
+            )
+        workspaces = user_workspaces(connection, session["id"])
+        active = next((w for w in workspaces if w["id"] == session["active_workspace_id"]), None)
+        if active is None and workspaces:
+            active = workspaces[0]
+        if (active["id"] if active else None) != session["active_workspace_id"]:
+            connection.execute(
+                "UPDATE sessions SET active_workspace_id = ? WHERE id = ?",
+                (active["id"] if active else None, session["session_id"]),
+            )
+    return {
+        "id": session["id"],
+        "email": session["email"],
+        "full_name": session["full_name"],
+        "session_id": session["session_id"],
+        "workspace_id": active["id"] if active else None,
+        "workspace_name": active["name"] if active else None,
+        "role": active["role"] if active else None,
+    }
+
+
+def require_roles(*roles: str):  # type: ignore[no-untyped-def]
+    """Dependency: a signed-in user whose role in the active workspace is one of `roles`."""
+    allowed = set(roles)
+
+    def dependency(user: Annotated[Row, Depends(get_current_user)]) -> Row:
+        if user["workspace_id"] is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Create or join a workspace first.")
+        if user["role"] not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your role in this workspace does not allow this action.",
+            )
+        return user
+
+    dependency.__name__ = f"require_{'_'.join(sorted(allowed))}"
+    return dependency
+
+
+require_member = require_roles(*ROLES)
+require_manager = require_roles(*MANAGERS)
+require_content_role = require_roles(*CONTENT_ROLES)
+require_reviewer = require_roles(*REVIEWERS)
+
+
+def record_audit(
+    connection: DatabaseConnection,
+    workspace_id: str,
+    actor_user_id: Optional[str],
+    action: str,
+    target_type: str,
+    target_id: Optional[str] = None,
+    details: Optional[dict] = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO audit_log (id, workspace_id, actor_user_id, action, target_type, target_id, created_at, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (str(uuid4()), workspace_id, actor_user_id, action, target_type, target_id, utc_now(),
+         json.dumps(details) if details else None),
+    )
 
 
 def session_response(user: Row) -> SessionResponse:
+    with connect_database() as connection:
+        workspaces = user_workspaces(connection, user["id"])
     return SessionResponse(
         id=user["id"],
         email=user["email"],
         full_name=user["full_name"],
-        workspace_name=user["workspace_name"],
+        workspace_id=user.get("workspace_id"),
+        workspace_name=user.get("workspace_name"),
+        role=user.get("role"),
+        workspaces=[{"id": w["id"], "name": w["name"], "role": w["role"]} for w in workspaces],
     )

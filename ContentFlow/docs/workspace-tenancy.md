@@ -1,7 +1,7 @@
 # Workspace multi-tenancy — final design (Task 1.7)
 
-Status: **design approved in principle; awaiting final review before implementation
-and before any migration of real data.**
+Status: **implemented on `Mohsin` (migration `0002_workspace_tenancy`). Not yet applied to
+the real local database; that needs separate approval.**
 
 ## Goals (from the approval)
 
@@ -19,8 +19,8 @@ and before any migration of real data.**
   connected social accounts and quotas belong to a workspace.
 - A **user** can belong to many workspaces through **memberships**. Agency staff
   are members of many client workspaces; a client user is usually a member of one.
-- Users appear on content only as `created_by_user_id`. Removing a person never
-  deletes a workspace's content.
+- Content rows keep the creator in their existing `user_id` column (now nullable,
+  `ON DELETE SET NULL`). Removing a person never deletes a workspace's content.
 
 ## Schema changes (migration `0002_workspace_tenancy`)
 
@@ -62,7 +62,7 @@ ALTER TABLE sessions ADD active_workspace_id TEXT NULL REFERENCES workspaces(id)
 
 -- workspace-owned tables: submissions, assets, scheduled_posts, social_accounts, oauth_states
 --   + workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE
---   user_id -> created_by_user_id, ON DELETE SET NULL (was CASCADE)
+--   user_id stays as the creator, now nullable with ON DELETE SET NULL (was CASCADE)
 -- social_accounts: UNIQUE (workspace_id, platform, account_id)    (was user_id, ...)
 -- new indexes: scheduled_posts(workspace_id, scheduled_date, scheduled_time),
 --              submissions(workspace_id, created_at), assets(workspace_id),
@@ -133,8 +133,8 @@ Precondition, checked first: **every user has exactly one membership, with role
 5. Verify in the same transaction: row counts unchanged for every table, zero
    rows with a NULL `workspace_id`, exactly one owner per workspace. Any failure
    rolls everything back.
-6. Rollback after commit: restore the backup (`downgrade` is also implemented
-   and tested, but the backup is the authoritative rollback).
+6. Rollback after commit: restore the verified backup that `migrate upgrade`
+   takes first. Downgrade is intentionally not supported.
 
 Existing users keep their passwords, sessions, workspace, posts, uploads and
 connected Facebook Page.
@@ -169,10 +169,14 @@ connected Facebook Page.
 - A database with real-shaped data upgrades with every row assigned to the
   right workspace, counts unchanged, sessions still valid.
 - The precondition check aborts on a user with no or several memberships.
-- Downgrade restores the previous schema with data intact.
 - The rehearsal tool reports identical data after migrating a copy of real data.
 
-## Open questions
+## Decisions (approved 2026-11-16)
+
+- "Assigned content" for a client: items sent to them for review.
+- Admins have all editor rights and may connect and disconnect social accounts.
+
+## Original open questions
 
 1. **What does "assigned content" mean for a client?** Proposed: a client sees
    items that have been **sent to them for review** (Phase 4 adds a review

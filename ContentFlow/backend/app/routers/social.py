@@ -16,7 +16,7 @@ from app import social_oauth
 from app.config import public_api_url, public_frontend_url, publisher_is_enabled
 from app.database import Row, connect_database, utc_now
 from app.schemas import SocialAccountResponse, SocialProviderStatus
-from app.security import get_current_user, token_cipher, token_digest
+from app.security import require_content_role, require_manager, token_cipher, token_digest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,12 +24,12 @@ router = APIRouter()
 
 @router.get("/api/social/providers", response_model=list[SocialProviderStatus])
 def list_social_providers(
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> list[SocialProviderStatus]:
     with connect_database() as connection:
         rows = connection.execute(
-            "SELECT * FROM social_accounts WHERE user_id = ? ORDER BY platform, account_name",
-            (user["id"],),
+            "SELECT * FROM social_accounts WHERE workspace_id = ? ORDER BY platform, account_name",
+            (user["workspace_id"],),
         ).fetchall()
     account_responses = [
         SocialAccountResponse(
@@ -67,7 +67,7 @@ def list_social_providers(
 @router.get("/api/social/oauth/{provider}/start")
 def start_social_oauth(
     provider: str,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_manager)],
 ) -> RedirectResponse:
     try:
         settings = social_oauth.get_provider_settings(provider)
@@ -92,8 +92,9 @@ def start_social_oauth(
     with connect_database() as connection:
         connection.execute("DELETE FROM oauth_states WHERE expires_at <= ?", (utc_now(),))
         connection.execute(
-            "INSERT INTO oauth_states (state_hash, provider, user_id, expires_at) VALUES (?, ?, ?, ?)",
-            (token_digest(state), provider, user["id"], (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()),
+            "INSERT INTO oauth_states (state_hash, provider, user_id, workspace_id, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (token_digest(state), provider, user["id"], user["workspace_id"],
+             (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()),
         )
     return RedirectResponse(
         social_oauth.build_authorization_url(provider, settings, redirect_uri, state),
@@ -118,7 +119,7 @@ async def finish_social_oauth(
         return finish("invalid_state")
     with connect_database() as connection:
         state_row = connection.execute(
-            "SELECT user_id FROM oauth_states WHERE state_hash = ? AND provider = ? AND expires_at > ?",
+            "SELECT user_id, workspace_id FROM oauth_states WHERE state_hash = ? AND provider = ? AND expires_at > ?",
             (token_digest(state), provider, utc_now()),
         ).fetchone()
         connection.execute("DELETE FROM oauth_states WHERE state_hash = ?", (token_digest(state),))
@@ -142,10 +143,10 @@ async def finish_social_oauth(
                 connection.execute(
                     """
                     INSERT INTO social_accounts (
-                        id, user_id, provider, platform, account_id, account_name,
+                        id, user_id, workspace_id, provider, platform, account_id, account_name,
                         account_type, encrypted_tokens, expires_at, connected_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, platform, account_id) DO UPDATE SET
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(workspace_id, platform, account_id) DO UPDATE SET
                         provider = excluded.provider,
                         account_name = excluded.account_name,
                         account_type = excluded.account_type,
@@ -154,7 +155,7 @@ async def finish_social_oauth(
                         updated_at = excluded.updated_at
                     """,
                     (
-                        str(uuid4()), state_row["user_id"], provider, account["platform"],
+                        str(uuid4()), state_row["user_id"], state_row["workspace_id"], provider, account["platform"],
                         account["account_id"], account["account_name"], account["account_type"],
                         encrypted_tokens, account["tokens"].get("expires_at"), now, now,
                     ),
@@ -179,12 +180,12 @@ async def finish_social_oauth(
 @router.delete("/api/social/accounts/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
 def disconnect_social_account(
     account_id: str,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_manager)],
 ) -> Response:
     with connect_database() as connection:
         result = connection.execute(
-            "DELETE FROM social_accounts WHERE id = ? AND user_id = ?",
-            (account_id, user["id"]),
+            "DELETE FROM social_accounts WHERE id = ? AND workspace_id = ?",
+            (account_id, user["workspace_id"]),
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Social account not found.")

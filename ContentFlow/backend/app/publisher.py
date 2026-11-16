@@ -71,16 +71,16 @@ async def publish_due_scheduled_posts(now: datetime | None = None) -> None:
                 account = connection.execute(
                     """
                     SELECT account_id, encrypted_tokens FROM social_accounts
-                    WHERE id = ? AND user_id = ? AND provider = 'meta' AND platform = 'facebook'
+                    WHERE id = ? AND workspace_id = ? AND provider = 'meta' AND platform = 'facebook'
                     """,
-                    (row["facebook_account_id"], row["user_id"]),
+                    (row["facebook_account_id"], row["workspace_id"]),
                 ).fetchone()
                 asset = connection.execute(
                     """
                     SELECT filename, media_type, storage_name FROM assets
-                    WHERE id = ? AND user_id = ?
+                    WHERE id = ? AND workspace_id = ?
                     """,
-                    (row["asset_id"], row["user_id"]),
+                    (row["asset_id"], row["workspace_id"]),
                 ).fetchone()
             if account is None:
                 raise ValueError("The selected Facebook Page is no longer connected.")

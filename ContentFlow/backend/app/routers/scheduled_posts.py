@@ -11,7 +11,7 @@ from app.config import Platform
 from app.database import Row, connect_database, utc_now
 from app.publisher import scheduled_create_utc
 from app.schemas import ScheduledPostBatchCreate, ScheduledPostDateUpdate, ScheduledPostResponse
-from app.security import get_current_user
+from app.security import require_content_role
 
 router = APIRouter()
 
@@ -54,16 +54,16 @@ def scheduled_post_conflicts(
 
 @router.get("/api/scheduled-posts", response_model=list[ScheduledPostResponse])
 def list_scheduled_posts(
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> list[ScheduledPostResponse]:
     with connect_database() as connection:
         rows = connection.execute(
             """
             SELECT * FROM scheduled_posts
-            WHERE user_id = ?
+            WHERE workspace_id = ?
             ORDER BY scheduled_date, scheduled_time, created_at
             """,
-            (user["id"],),
+            (user["workspace_id"],),
         ).fetchall()
     return [scheduled_post_from_row(row) for row in rows]
 
@@ -75,7 +75,7 @@ def list_scheduled_posts(
 )
 def create_scheduled_posts(
     payload: ScheduledPostBatchCreate,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> list[ScheduledPostResponse]:
     incoming = payload.posts
     for post in incoming:
@@ -97,8 +97,8 @@ def create_scheduled_posts(
         if post.asset_id:
             with connect_database() as connection:
                 asset = connection.execute(
-                    "SELECT media_type FROM assets WHERE id = ? AND user_id = ?",
-                    (post.asset_id, user["id"]),
+                    "SELECT media_type FROM assets WHERE id = ? AND workspace_id = ?",
+                    (post.asset_id, user["workspace_id"]),
                 ).fetchone()
             if asset is None:
                 raise HTTPException(
@@ -115,9 +115,9 @@ def create_scheduled_posts(
                 page = connection.execute(
                     """
                     SELECT id FROM social_accounts
-                    WHERE id = ? AND user_id = ? AND provider = 'meta' AND platform = 'facebook'
+                    WHERE id = ? AND workspace_id = ? AND provider = 'meta' AND platform = 'facebook'
                     """,
-                    (post.facebook_account_id, user["id"]),
+                    (post.facebook_account_id, user["workspace_id"]),
                 ).fetchone()
             if page is None:
                 raise HTTPException(
@@ -145,8 +145,8 @@ def create_scheduled_posts(
     with connect_database() as connection:
         connection.lock_for_write()
         existing_rows = connection.execute(
-            "SELECT * FROM scheduled_posts WHERE user_id = ?",
-            (user["id"],),
+            "SELECT * FROM scheduled_posts WHERE workspace_id = ?",
+            (user["workspace_id"],),
         ).fetchall()
         response_rows: list[Row] = []
 
@@ -187,9 +187,9 @@ def create_scheduled_posts(
                 INSERT INTO scheduled_posts (
                     id, media_name, scheduled_date, scheduled_time,
                     platforms_json, caption, created_at, user_id,
-                    asset_id, facebook_account_id, timezone_offset_minutes
+                    asset_id, facebook_account_id, timezone_offset_minutes, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     post_id,
@@ -203,6 +203,7 @@ def create_scheduled_posts(
                     post.asset_id,
                     post.facebook_account_id,
                     post.timezone_offset_minutes,
+                    user["workspace_id"],
                 ),
             )
             row = connection.execute(
@@ -221,13 +222,13 @@ def create_scheduled_posts(
 def reschedule_post(
     post_id: str,
     payload: ScheduledPostDateUpdate,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> ScheduledPostResponse:
     with connect_database() as connection:
         connection.lock_for_write()
         row = connection.execute(
-            "SELECT * FROM scheduled_posts WHERE id = ? AND user_id = ?",
-            (post_id, user["id"]),
+            "SELECT * FROM scheduled_posts WHERE id = ? AND workspace_id = ?",
+            (post_id, user["workspace_id"]),
         ).fetchone()
         if row is None:
             raise HTTPException(
@@ -253,8 +254,8 @@ def reschedule_post(
                     detail="Choose a future date for automatic Facebook publishing.",
                 )
         existing_rows = connection.execute(
-            "SELECT * FROM scheduled_posts WHERE user_id = ?",
-            (user["id"],),
+            "SELECT * FROM scheduled_posts WHERE workspace_id = ?",
+            (user["workspace_id"],),
         ).fetchall()
         if scheduled_post_conflicts(
             json.loads(row["platforms_json"]),
@@ -269,8 +270,8 @@ def reschedule_post(
             )
 
         connection.execute(
-            "UPDATE scheduled_posts SET scheduled_date = ? WHERE id = ? AND user_id = ?",
-            (scheduled_date, post_id, user["id"]),
+            "UPDATE scheduled_posts SET scheduled_date = ? WHERE id = ? AND workspace_id = ?",
+            (scheduled_date, post_id, user["workspace_id"]),
         )
         updated = connection.execute(
             "SELECT * FROM scheduled_posts WHERE id = ?",
@@ -285,20 +286,20 @@ def reschedule_post(
 @router.delete("/api/scheduled-posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_scheduled_post(
     post_id: str,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> Response:
     with connect_database() as connection:
         cursor = connection.execute(
             """
             DELETE FROM scheduled_posts
-            WHERE id = ? AND user_id = ? AND publish_status IN ('scheduled', 'failed')
+            WHERE id = ? AND workspace_id = ? AND publish_status IN ('scheduled', 'failed')
             """,
-            (post_id, user["id"]),
+            (post_id, user["workspace_id"]),
         )
         if cursor.rowcount == 0:
             exists = connection.execute(
-                "SELECT 1 FROM scheduled_posts WHERE id = ? AND user_id = ?",
-                (post_id, user["id"]),
+                "SELECT 1 FROM scheduled_posts WHERE id = ? AND workspace_id = ?",
+                (post_id, user["workspace_id"]),
             ).fetchone()
             if exists is not None:
                 raise HTTPException(

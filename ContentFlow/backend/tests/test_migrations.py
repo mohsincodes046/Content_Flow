@@ -60,10 +60,10 @@ def test_baseline_migration_matches_the_legacy_schema(sqlite_path: Path, tmp_pat
     with sqlite3.connect(legacy_path) as connection:
         connection.executescript(migrations_runner.LEGACY_SQLITE_SCHEMA)
 
-    migrations_runner.ensure_schema()  # empty database -> alembic upgrade head
+    migrations_runner.upgrade("0001_baseline")
 
     assert _schema(sqlite_path) == _schema(legacy_path)
-    assert migrations_runner.current_revision() == migrations_runner.head_revision()
+    assert migrations_runner.current_revision() == "0001_baseline"
 
 
 def test_pre_alembic_database_is_stamped_without_losing_data(sqlite_path: Path) -> None:
@@ -81,20 +81,48 @@ def test_pre_alembic_database_is_stamped_without_losing_data(sqlite_path: Path) 
     with sqlite3.connect(sqlite_path) as connection:
         connection.executescript(old_schema)
         connection.execute("INSERT INTO users VALUES ('u1', 'a@example.com', 'A', 'hash', '2026-01-01T00:00:00+00:00')")
+        connection.execute("INSERT INTO workspaces VALUES ('w1', 'Studio', '2026-01-01T00:00:00+00:00')")
+        connection.execute("INSERT INTO memberships VALUES ('u1', 'w1', 'owner')")
         connection.execute(
             "INSERT INTO scheduled_posts (id, media_name, scheduled_date, scheduled_time, platforms_json, caption, created_at, user_id) "
             "VALUES ('p1', 'img.jpg', '2026-12-01', '10:00', '[\"facebook\"]', 'Hi', '2026-01-01', 'u1')"
         )
     assert "publish_status" not in {row[1] for row in sqlite3.connect(sqlite_path).execute("PRAGMA table_info(scheduled_posts)")}
 
-    migrations_runner.ensure_schema()
-
+    # 1. Starting the app stamps the old database, then refuses to migrate it unattended.
+    with pytest.raises(migrations_runner.SchemaOutOfDateError):
+        migrations_runner.ensure_schema()
     with sqlite3.connect(sqlite_path) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001_baseline"
         assert connection.execute("SELECT email FROM users").fetchall() == [("a@example.com",)]
         assert connection.execute("SELECT publish_status, timezone_offset_minutes FROM scheduled_posts").fetchall() == [
             ("scheduled", 0)
         ]
+
+    # 2. The deliberate upgrade backs up, then moves everything into the workspace.
+    assert migrate.main(["upgrade"]) == 0
+    with sqlite3.connect(sqlite_path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == migrations_runner.head_revision()
+        assert connection.execute("SELECT id, workspace_id, user_id FROM scheduled_posts").fetchall() == [("p1", "w1", "u1")]
+        assert connection.execute("SELECT role, created_at FROM memberships").fetchall() == [
+            ("owner", "2026-01-01T00:00:00+00:00")
+        ]
+        assert connection.execute("SELECT created_by_user_id FROM workspaces").fetchall() == [("u1",)]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert len(list((sqlite_path.parent / "backups").glob("*-before-upgrade.sqlite3"))) == 1
+
+
+def test_tenancy_migration_aborts_without_changes_when_a_user_has_no_workspace(sqlite_path: Path) -> None:
+    migrations_runner.upgrade("0001_baseline")
+    with sqlite3.connect(sqlite_path) as connection:
+        connection.execute("INSERT INTO users VALUES ('u1', 'a@example.com', 'A', 'hash', '2026-01-01T00:00:00+00:00')")
+    before = _schema(sqlite_path)
+
+    with pytest.raises(RuntimeError, match="do not have exactly one owner workspace"):
+        migrations_runner.upgrade("head")
+
+    assert migrations_runner.current_revision() == "0001_baseline"
+    assert _schema(sqlite_path) == before
 
 
 def test_outdated_database_refuses_to_start_unless_auto_migrate(

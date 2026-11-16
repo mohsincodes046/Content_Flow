@@ -165,6 +165,31 @@ a { color: inherit; text-decoration: none; }
 .workspace-switch b { overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-switch small { color: #A1A1AA; font-size: 12px; }
 .workspace-switch > .icon { color: #A1A1AA; }
+.workspace-switcher { position: relative; }
+button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.workspace-caret { color: #A1A1AA; font-size: 11px; }
+.workspace-menu { position: absolute; top: calc(100% - 14px); left: 0; right: 0; z-index: 30; display: grid; gap: 2px; padding: 5px; border: 1px solid #273044; border-radius: 8px; background: #111827; box-shadow: 0 12px 30px #0006; }
+.workspace-option { display: flex; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 0; border-radius: 6px; background: transparent; color: #E4E4E7; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.workspace-option small { color: #A1A1AA; }
+.workspace-option:hover, .workspace-option-active { background: #151C2C; }
+.workspace-option-active span { color: #A78BFA; }
+.workspace-new { color: #A78BFA; }
+.workspace-create { display: flex; gap: 6px; padding: 4px; }
+.workspace-create input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #273044; border-radius: 6px; background: #0B0F19; color: #E4E4E7; font: inherit; font-size: 12px; }
+.workspace-create-large { width: min(420px, 100%); }
+.team-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: #A1A1AA; }
+.team-actions button, .invite-link-row button { padding: 4px 8px; border: 1px solid #273044; border-radius: 6px; background: #151C2C; color: #E4E4E7; font: inherit; font-size: 11px; cursor: pointer; }
+.team-table-row select, .invite-fields select { padding: 4px 6px; border: 1px solid #273044; border-radius: 6px; background: #0B0F19; color: #E4E4E7; font: inherit; font-size: 12px; }
+.invite-form { margin-top: 18px; display: grid; gap: 7px; }
+.invite-form small { color: #A1A1AA; font-size: 11px; }
+.invite-fields { display: flex; flex-wrap: wrap; gap: 6px; }
+.invite-fields input { flex: 1; min-width: 200px; padding: 8px; border: 1px solid #273044; border-radius: 6px; background: #0B0F19; color: #E4E4E7; font: inherit; }
+.invite-link { margin-top: 12px; padding: 10px; border: 1px solid #A78BFA55; border-radius: 8px; background: #151C2C; }
+.invite-link p { margin: 4px 0 8px; color: #A1A1AA; font-size: 11px; }
+.invite-link-row { display: flex; align-items: center; gap: 6px; }
+.invite-link-row code { flex: 1; min-width: 0; overflow-x: auto; padding: 6px; border-radius: 6px; background: #0B0F19; font-size: 11px; white-space: nowrap; }
+.invite-screen .auth-form { width: min(360px, 100%); text-align: left; }
+.auth-switch-button { border: 0; background: none; color: #A78BFA; font: inherit; font-size: 12px; cursor: pointer; }
 .side-nav { display: flex; flex-direction: column; gap: 2px; }
 .nav-section-label { margin: 0 0 7px; padding: 0 10px; color: #A1A1AA; font-size: 11px; font-weight: 750; letter-spacing: 1.13px; }
 .side-nav > div:not(:first-child) .nav-section-label { margin-top: 18px; }

@@ -16,15 +16,30 @@ def run_migrations() -> None:
 
 
 def _run(connection) -> None:  # type: ignore[no-untyped-def]
+    sqlite = connection.dialect.name == "sqlite"
+    if sqlite and not connection.in_transaction():
+        # Table rebuilds (batch mode) drop and recreate tables. With foreign keys
+        # enforced, SQLite would treat the drop as a DELETE and cascade it into
+        # child tables, so enforcement is paused (outside any transaction, where
+        # the pragma takes effect) and every relationship is re-verified below.
+        connection.connection.driver_connection.execute("PRAGMA foreign_keys = OFF")
     context.configure(
         connection=connection,
         target_metadata=None,
         # SQLite cannot ALTER most constraints; batch mode rebuilds tables instead.
-        render_as_batch=connection.dialect.name == "sqlite",
+        render_as_batch=sqlite,
         compare_type=True,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+    try:
+        with context.begin_transaction():
+            context.run_migrations()
+            if sqlite:
+                violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise RuntimeError(f"Migration left broken relationships: {violations[:5]}")
+    finally:
+        if sqlite:
+            connection.connection.driver_connection.execute("PRAGMA foreign_keys = ON")
 
 
 if context.is_offline_mode():

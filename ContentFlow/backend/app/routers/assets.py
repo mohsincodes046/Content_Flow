@@ -10,7 +10,7 @@ from app import config
 from app.config import ALLOWED_MEDIA_TYPES, MAX_UPLOAD_BYTES, UPLOAD_CHUNK_BYTES
 from app.database import Row, connect_database, utc_now
 from app.schemas import AssetResponse
-from app.security import get_current_user
+from app.security import require_content_role
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ router = APIRouter()
 )
 async def upload_asset(
     file: Annotated[UploadFile, File()],
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> AssetResponse:
     media_type = file.content_type or ""
     if not media_type.startswith(ALLOWED_MEDIA_TYPES):
@@ -58,10 +58,10 @@ async def upload_asset(
         with connect_database() as connection:
             connection.execute(
                 """
-                INSERT INTO assets (id, filename, media_type, size, storage_name, created_at, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO assets (id, filename, media_type, size, storage_name, created_at, user_id, workspace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (asset_id, filename, media_type, total_bytes, storage_name, created_at, user["id"]),
+                (asset_id, filename, media_type, total_bytes, storage_name, created_at, user["id"], user["workspace_id"]),
             )
         return AssetResponse(
             id=asset_id,

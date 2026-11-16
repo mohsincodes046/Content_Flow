@@ -11,7 +11,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
 
-from app import config, database, migrations_runner, publisher, security, social_oauth
+from app import config, database, migrations_runner, publisher, security, social_oauth, workspaces
 
 
 @pytest.fixture()
@@ -62,23 +62,26 @@ def test_concurrent_publishers_never_publish_a_post_twice(db: str, monkeypatch: 
     now = database.utc_now()
     with database.connect_database() as connection:
         connection.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?)", ("u1", "a@example.com", "A", "hash", now))
+        workspace_id = workspaces.create_workspace(connection, "u1", "W")
         connection.execute(
-            "INSERT INTO social_accounts (id, user_id, provider, platform, account_id, account_name, account_type, "
-            "encrypted_tokens, expires_at, connected_at, updated_at) VALUES (?, ?, 'meta', 'facebook', ?, ?, 'page', ?, NULL, ?, ?)",
-            ("page", "u1", "meta-page", "Page", Fernet(key).encrypt(b'{"access_token": "t"}').decode(), now, now),
+            "INSERT INTO social_accounts (id, user_id, workspace_id, provider, platform, account_id, account_name, "
+            "account_type, encrypted_tokens, expires_at, connected_at, updated_at) "
+            "VALUES (?, ?, ?, 'meta', 'facebook', ?, ?, 'page', ?, NULL, ?, ?)",
+            ("page", "u1", workspace_id, "meta-page", "Page", Fernet(key).encrypt(b'{"access_token": "t"}').decode(),
+             now, now),
         )
         for index in range(10):
             (config.UPLOAD_DIR / f"a{index}.upload").write_bytes(b"img")
             connection.execute(
-                "INSERT INTO assets (id, filename, media_type, size, storage_name, created_at, user_id) "
-                "VALUES (?, ?, 'image/jpeg', 3, ?, ?, 'u1')",
-                (f"a{index}", f"a{index}.jpg", f"a{index}.upload", now),
+                "INSERT INTO assets (id, filename, media_type, size, storage_name, created_at, user_id, workspace_id) "
+                "VALUES (?, ?, 'image/jpeg', 3, ?, ?, 'u1', ?)",
+                (f"a{index}", f"a{index}.jpg", f"a{index}.upload", now, workspace_id),
             )
             connection.execute(
                 "INSERT INTO scheduled_posts (id, media_name, scheduled_date, scheduled_time, platforms_json, caption, "
-                "created_at, user_id, asset_id, facebook_account_id, timezone_offset_minutes) "
-                "VALUES (?, ?, '2020-01-01', '00:00', ?, 'c', ?, 'u1', ?, 'page', 0)",
-                (f"p{index}", f"a{index}.jpg", json.dumps(["facebook"]), now, f"a{index}"),
+                "created_at, user_id, asset_id, facebook_account_id, timezone_offset_minutes, workspace_id) "
+                "VALUES (?, ?, '2020-01-01', '00:00', ?, 'c', ?, 'u1', ?, 'page', 0, ?)",
+                (f"p{index}", f"a{index}.jpg", json.dumps(["facebook"]), now, f"a{index}", workspace_id),
             )
 
     published: list[str] = []

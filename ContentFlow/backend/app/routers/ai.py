@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app import ai as ai_service
 from app.database import Row, connect_database
 from app.schemas import AIUsageResponse, CaptionDrafts, CaptionGenerationRequest, CaptionGenerationResponse
-from app.security import ai_limits, check_rate_limit, count_recent_events, get_current_user
+from app.security import ai_limits, check_rate_limit, count_recent_events, require_content_role
 
 router = APIRouter()
 
@@ -18,7 +18,7 @@ router = APIRouter()
 @router.post("/api/ai/captions", response_model=CaptionGenerationResponse)
 async def generate_platform_captions(
     payload: CaptionGenerationRequest,
-    user: Annotated[Row, Depends(get_current_user)],
+    user: Annotated[Row, Depends(require_content_role)],
 ) -> CaptionGenerationResponse:
     provider = os.environ.get("CONTENT_FLOW_AI_PROVIDER", "claude").strip().lower()
     provider_config = {
@@ -35,12 +35,12 @@ async def generate_platform_captions(
 
     per_minute, per_day = ai_limits()
     check_rate_limit(
-        "ai_minute", user["id"], per_minute, timedelta(minutes=1),
+        "ai_minute", user["workspace_id"], per_minute, timedelta(minutes=1),
         detail="You are generating captions too quickly. Please wait a moment.",
     )
     # Every provider call counts toward the daily quota, because failed calls can still be billed.
     check_rate_limit(
-        "ai_daily", user["id"], per_day, timedelta(days=1),
+        "ai_daily", user["workspace_id"], per_day, timedelta(days=1),
         detail=f"You have used all {per_day} AI caption generations for the last 24 hours.",
     )
 
@@ -84,9 +84,9 @@ async def generate_platform_captions(
 
 
 @router.get("/api/ai/usage", response_model=AIUsageResponse)
-def ai_usage(user: Annotated[Row, Depends(get_current_user)]) -> AIUsageResponse:
+def ai_usage(user: Annotated[Row, Depends(require_content_role)]) -> AIUsageResponse:
     _, per_day = ai_limits()
     now = datetime.now(timezone.utc)
     with connect_database() as connection:
-        used, _ = count_recent_events(connection, "ai_daily", user["id"], timedelta(days=1), now)
+        used, _ = count_recent_events(connection, "ai_daily", user["workspace_id"], timedelta(days=1), now)
     return AIUsageResponse(used_last_24h=used, daily_limit=per_day, remaining=max(0, per_day - used))

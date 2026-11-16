@@ -783,14 +783,18 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
     monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
     page_record_id = "connected-facebook-page"
     with database.connect_database() as connection:
-        user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
+        user = connection.execute(
+            "SELECT users.id, memberships.workspace_id FROM users JOIN memberships ON memberships.user_id = users.id "
+            "WHERE users.email = ?",
+            ("test@example.com",),
+        ).fetchone()
         assert user is not None
         connection.execute(
             """
             INSERT INTO social_accounts (
                 id, user_id, provider, platform, account_id, account_name, account_type,
-                encrypted_tokens, expires_at, connected_at, updated_at
-            ) VALUES (?, ?, 'meta', 'facebook', 'meta-page-42', 'Rahat Pizza Islamabad', 'page', ?, NULL, ?, ?)
+                encrypted_tokens, expires_at, connected_at, updated_at, workspace_id
+            ) VALUES (?, ?, 'meta', 'facebook', 'meta-page-42', 'Rahat Pizza Islamabad', 'page', ?, NULL, ?, ?, ?)
             """,
             (
                 page_record_id,
@@ -798,6 +802,7 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
                 Fernet(encryption_key).encrypt(json.dumps({"access_token": "page-token"}).encode()).decode("ascii"),
                 datetime.now(timezone.utc).isoformat(),
                 datetime.now(timezone.utc).isoformat(),
+                user["workspace_id"],
             ),
         )
 
@@ -866,16 +871,21 @@ def test_facebook_post_cannot_be_rescheduled_into_the_past(
     encryption_key = Fernet.generate_key().decode("ascii")
     monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
     with database.connect_database() as connection:
-        user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
+        user = connection.execute(
+            "SELECT users.id, memberships.workspace_id FROM users JOIN memberships ON memberships.user_id = users.id "
+            "WHERE users.email = ?",
+            ("test@example.com",),
+        ).fetchone()
         now = datetime.now(timezone.utc).isoformat()
         connection.execute(
             """
             INSERT INTO social_accounts (
                 id, user_id, provider, platform, account_id, account_name, account_type,
-                encrypted_tokens, expires_at, connected_at, updated_at
-            ) VALUES ('page-record', ?, 'meta', 'facebook', 'meta-page-1', 'Test Page', 'page', ?, NULL, ?, ?)
+                encrypted_tokens, expires_at, connected_at, updated_at, workspace_id
+            ) VALUES ('page-record', ?, 'meta', 'facebook', 'meta-page-1', 'Test Page', 'page', ?, NULL, ?, ?, ?)
             """,
-            (user["id"], Fernet(encryption_key).encrypt(b'{"access_token": "t"}').decode("ascii"), now, now),
+            (user["id"], Fernet(encryption_key).encrypt(b'{"access_token": "t"}').decode("ascii"), now, now,
+             user["workspace_id"]),
         )
     uploaded = client.post("/api/assets", files={"file": ("poster.jpg", b"image bytes", "image/jpeg")})
     tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date()

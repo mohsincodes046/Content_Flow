@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, time  # noqa: F401
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.config import Platform
 
@@ -85,11 +85,13 @@ class RegistrationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     full_name: str = Field(min_length=1, max_length=100)
-    workspace_name: str = Field(min_length=1, max_length=120)
+    # Required unless joining an existing workspace through an invitation.
+    workspace_name: Optional[str] = Field(default=None, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    invitation_token: Optional[str] = Field(default=None, min_length=20, max_length=200)
 
-    @field_validator("full_name", "workspace_name", mode="before")
+    @field_validator("full_name", mode="before")
     @classmethod
     def strip_required_text(cls, value: object) -> str:
         if not isinstance(value, str):
@@ -98,6 +100,21 @@ class RegistrationCreate(BaseModel):
         if not value:
             raise ValueError("This field cannot be blank.")
         return value
+
+    @field_validator("workspace_name", mode="before")
+    @classmethod
+    def strip_workspace_name(cls, value: object) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("This field must be text.")
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def need_workspace_or_invitation(self) -> "RegistrationCreate":
+        if not self.workspace_name and not self.invitation_token:
+            raise ValueError("Enter a workspace name.")
+        return self
 
 
 class LoginCreate(BaseModel):
@@ -198,11 +215,89 @@ class SubmissionResponse(BaseModel):
     created_at: str
 
 
+Role = Literal["owner", "admin", "editor", "client"]
+InvitableRole = Literal["admin", "editor", "client"]
+
+
+class WorkspaceSummary(BaseModel):
+    id: str
+    name: str
+    role: Role
+
+
 class SessionResponse(BaseModel):
     id: str
     email: str
     full_name: str
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
+    role: Optional[Role] = None
+    workspaces: list[WorkspaceSummary] = Field(default_factory=list)
+
+
+class WorkspaceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Workspace name cannot be blank.")
+        return value.strip()
+
+
+class WorkspaceRename(WorkspaceCreate):
+    pass
+
+
+class MemberResponse(BaseModel):
+    user_id: str
+    full_name: str
+    email: str
+    role: Role
+    joined_at: str
+
+
+class MemberRoleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: InvitableRole
+
+
+class InvitationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    role: InvitableRole
+
+
+class InvitationResponse(BaseModel):
+    id: str
+    email: str
+    role: InvitableRole
+    created_at: str
+    expires_at: str
+    invite_url: Optional[str] = None  # only returned once, when the invitation is created
+
+
+class InvitationAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=20, max_length=200)
+
+
+class InvitationPreview(BaseModel):
     workspace_name: str
+    email: str
+    role: InvitableRole
+
+
+class OwnershipTransfer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
 
 
 class SocialAccountResponse(BaseModel):
