@@ -589,6 +589,22 @@ a { color: inherit; text-decoration: none; }
 .ai-generated-draft > small { color: #A78BFA; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .analytics-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(220px, .8fr); gap: 13px; }
 .analytics-chart, .best-time-card { padding: 16px; }
+.analytics-status-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.analytics-status { padding: 12px; display: flex; flex-direction: column; gap: 3px; border: 1px solid #273044; border-radius: 7px; background: #151C2C; }
+.analytics-status b { font-size: 24px; }
+.analytics-status span { color: #A1A1AA; font-size: 11px; }
+.analytics-published b { color: #22C55E; }
+.analytics-failed b { color: #F87171; }
+.analytics-publishing b { color: #F59E0B; }
+.analytics-platform-list { margin-top: 18px; display: flex; flex-direction: column; gap: 6px; }
+.analytics-platform-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #273044; font-size: 12px; }
+.analytics-platform-row b { margin-left: auto; }
+.best-time-card .button { margin-top: 12px; }
+.library-session-note, .team-coming-soon { margin: 8px 0 0; color: #A1A1AA; font-size: 11px; line-height: 1.5; }
+.preview-warning a { color: #A78BFA; text-decoration: underline; }
+.notification-popover p strong { color: #F4F4F5; }
+.connection-state.social-not-connected { color: #A1A1AA; }
+.connection-state.social-not-connected > i { background: #52525B; box-shadow: none; }
 .analytics-range { padding: 6px 8px; border: 1px solid #273044; border-radius: 5px; color: #A1A1AA; font-size: 11px; }
 .analytics-number { margin-top: 16px; color: #F8FAFC; font-family: var(--serif); font-size: 28px; }
 .analytics-number > span { margin-left: 7px; color: #22C55E; font-family: Arial, sans-serif; font-size: 11px; }

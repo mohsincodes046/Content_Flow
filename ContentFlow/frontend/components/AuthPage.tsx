@@ -206,9 +206,9 @@ return (
         {!isForgot && !isReset && (
           <p className="auth-switch">
             {isSignUp ? "Already have an account?" : "New around here?"}{" "}
-            <a href="https://www.facebook.com/dialog/oauth?client_id=1460721630450284&config_id=2226454624973025&display=popup&override_default_response_type=true&redirect_uri=https%3A%2F%2Finvalid.invalid%2Fapi%2Fsocial%2Foath%2Finstagram%2Fcallback&response_type=code&state=%3CSTATE%3E&prompt=login">
+            <Link href={isSignUp ? "/login" : "/signup"}>
               {isSignUp ? "Sign in" : "Get started"}
-            </a>
+            </Link>
           </p>
         )}
         {isReset && (
