@@ -26,6 +26,30 @@ PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
 }
 
 
+class MetaAPIError(ValueError):
+    """A Graph API request failed; the message is safe to show to the user."""
+
+
+def _meta_error_message(response: httpx.Response) -> str:
+    """Build a user-facing message from a Graph API error response.
+
+    Graph errors look like {"error": {"message": ..., "code": ..., "error_subcode": ...}}.
+    Only Meta's message and codes are used, never request data, so tokens cannot leak.
+    """
+    try:
+        error = response.json().get("error")
+    except ValueError:
+        error = None
+    if not isinstance(error, dict):
+        return f"Facebook rejected the request (HTTP {response.status_code})."
+    message = str(error.get("message") or "Unknown error").strip()
+    code = error.get("code")
+    if code == 190:
+        return f"The Facebook Page authorization has expired or was revoked. Reconnect the Page. ({message})"
+    suffix = f" (code {code})" if code is not None else ""
+    return f"Facebook rejected the post: {message}{suffix}"
+
+
 def get_provider_settings(provider: str) -> dict[str, str]:
     settings = PROVIDER_SETTINGS.get(provider)
     if settings is None:
@@ -169,7 +193,8 @@ async def publish_facebook_photo(
                 data={"access_token": access_token, "caption": caption},
                 files={"source": (filename, media_file, media_type)},
             )
-    response.raise_for_status()
+    if response.is_error:
+        raise MetaAPIError(_meta_error_message(response))
     payload = response.json()
     post_id = payload.get("post_id") or payload.get("id")
     if not isinstance(post_id, str) or not post_id:

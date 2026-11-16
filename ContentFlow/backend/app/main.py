@@ -1400,6 +1400,17 @@ def reschedule_post(
             )
 
         scheduled_date = payload.date.isoformat()
+        if row["facebook_account_id"]:
+            moved_utc = datetime.combine(
+                payload.date, time.fromisoformat(row["scheduled_time"])
+            ).replace(
+                tzinfo=timezone(timedelta(minutes=-row["timezone_offset_minutes"]))
+            )
+            if moved_utc <= datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Choose a future date for automatic Facebook publishing.",
+                )
         existing_rows = connection.execute(
             "SELECT * FROM scheduled_posts WHERE user_id = ?",
             (user["id"],),

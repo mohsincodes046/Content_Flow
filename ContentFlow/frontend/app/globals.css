@@ -507,7 +507,19 @@ a { color: inherit; text-decoration: none; }
 .calendar-legend { min-height: 38px; display: flex; align-items: center; flex-wrap: wrap; gap: 14px; color: #A1A1AA; font-size: 11px; }
 .calendar-legend > span:not(.calendar-legend-note) { display: flex; align-items: center; gap: 5px; }
 .legend-dot { width: 6px; height: 6px; border-radius: 50%; }
-.legend-pending { background: #0B0F19; }.legend-published { background: #22C55E; }.legend-failed { background: #151C2C; }
+.legend-pending { background: #A1A1AA; }.legend-published { background: #22C55E; }.legend-failed { background: #F87171; }
+.pending-tag.status-scheduled > i { background: #A1A1AA; }
+.pending-tag.status-publishing { color: #F59E0B; }
+.pending-tag.status-publishing > i { background: #F59E0B; }
+.pending-tag.status-published { color: #22C55E; }
+.pending-tag.status-published > i { background: #22C55E; }
+.pending-tag.status-failed { color: #F87171; }
+.pending-tag.status-failed > i { background: #F87171; }
+.upcoming-row:has(.publish-error-text) { flex-wrap: wrap; }
+.publish-error-text { flex-basis: 100%; padding-left: 52px; color: #F87171; font-size: 10px; line-height: 1.4; }
+.calendar-post-chip.chip-published { border-color: #22C55E55; }
+.calendar-post-chip.chip-failed { border-color: #F8717188; color: #F87171; }
+.calendar-post-chip.chip-publishing { border-color: #F59E0B88; }
 .calendar-legend-note { margin-left: auto; color: #A1A1AA; font-size: 10px; }
 .library-panel { padding: 17px; }
 .library-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }

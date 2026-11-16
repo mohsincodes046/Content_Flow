@@ -595,6 +595,38 @@ def test_facebook_photo_publisher_uploads_the_image_to_the_selected_page(
     assert post_id == "facebook-photo-99"
 
 
+@pytest.mark.parametrize(
+    ("graph_error", "expected_fragment"),
+    [
+        ({"message": "Invalid parameter", "code": 100}, "Facebook rejected the post: Invalid parameter (code 100)"),
+        ({"message": "Session has expired", "code": 190}, "Reconnect the Page"),
+    ],
+)
+def test_facebook_photo_publisher_reports_meta_error_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    graph_error: dict[str, object],
+    expected_fragment: str,
+) -> None:
+    image_path = tmp_path / "post.jpg"
+    image_path.write_bytes(b"test image bytes")
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(400, json={"error": graph_error}))
+    monkeypatch.setattr(
+        main.social_oauth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(main.social_oauth.MetaAPIError) as raised:
+        asyncio.run(main.social_oauth.publish_facebook_photo(
+            "page-42", "secret-page-token", image_path, "post.jpg", "image/jpeg", "Caption",
+        ))
+
+    assert expected_fragment in str(raised.value)
+    assert "secret-page-token" not in str(raised.value)
+
+
 def test_caption_generation_requires_provider_key(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -826,6 +858,53 @@ def test_scheduled_facebook_image_posts_to_the_selected_page(
     assert refreshed.status_code == 200
     assert refreshed.json()[0]["publish_status"] == "published"
     assert published == [("meta-page-42", "A new menu is here.", b"image bytes", "poster.jpg")]
+
+
+def test_facebook_post_cannot_be_rescheduled_into_the_past(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encryption_key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key)
+    with main.connect_database() as connection:
+        user = connection.execute("SELECT id FROM users WHERE email = ?", ("test@example.com",)).fetchone()
+        now = datetime.now(timezone.utc).isoformat()
+        connection.execute(
+            """
+            INSERT INTO social_accounts (
+                id, user_id, provider, platform, account_id, account_name, account_type,
+                encrypted_tokens, expires_at, connected_at, updated_at
+            ) VALUES ('page-record', ?, 'meta', 'facebook', 'meta-page-1', 'Test Page', 'page', ?, NULL, ?, ?)
+            """,
+            (user["id"], Fernet(encryption_key).encrypt(b'{"access_token": "t"}').decode("ascii"), now, now),
+        )
+    uploaded = client.post("/api/assets", files={"file": ("poster.jpg", b"image bytes", "image/jpeg")})
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date()
+    created = client.post(
+        "/api/scheduled-posts",
+        json={"posts": [{
+            "media_name": "poster.jpg",
+            "date": tomorrow.isoformat(),
+            "time": "23:00",
+            "platforms": ["facebook"],
+            "caption": "Caption",
+            "asset_id": uploaded.json()["id"],
+            "facebook_account_id": "page-record",
+            "timezone_offset_minutes": 0,
+        }]},
+    )
+    assert created.status_code == 201
+    post_id = created.json()[0]["id"]
+
+    past = client.patch(f"/api/scheduled-posts/{post_id}", json={"date": "2020-01-01"})
+    future = client.patch(
+        f"/api/scheduled-posts/{post_id}",
+        json={"date": (tomorrow + timedelta(days=1)).isoformat()},
+    )
+
+    assert past.status_code == 422
+    assert past.json()["detail"] == "Choose a future date for automatic Facebook publishing."
+    assert future.status_code == 200
 
 
 def test_scheduled_posts_reject_channel_time_conflicts_atomically(client: TestClient) -> None:
