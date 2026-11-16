@@ -18,7 +18,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Client approval workflow | ✅ | |
 | Facebook and Instagram publishing | ✅ | Live posting needs a real Page/IG account (manual test) |
 | Scheduling worker with retries | ✅ | Enable with `CONTENT_FLOW_PUBLISHER_ENABLED=true` |
-| Analytics | ⏳ | |
+| Analytics | ✅ | Live numbers need connected accounts with insights permission (manual test) |
 | TikTok, LinkedIn | ⏳ | |
 
 ## External requirements (owner action needed)
@@ -27,7 +27,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
   and set the Blueprint Path to `ContentFlow/render.yaml`.
 - Approval before provisioning a paid PostgreSQL database.
 - Approval before migrating the real local database to new schema versions.
-  It is at `0001_baseline`; the code needs `0004_posts`, so the
+  It is at `0001_baseline`; the code needs `0005_analytics_cache`, so the
   local API refuses to start until `python -m app.migrate upgrade` is run
   (it takes a verified backup first). Rehearsed successfully on a copy.
 

@@ -301,3 +301,119 @@ async def publish_instagram(ig_id: str, token: str, caption: str, media: list[tu
     except GraphError:
         pass  # the post is live; a missing permalink is not a failure
     return PublishResult(media_id, permalink)
+
+
+# --- Insights ----------------------------------------------------------------------------------
+# Each metric is requested on its own: Meta retires metrics regularly, and one
+# retired metric in a combined request would fail the whole request. A metric
+# Meta rejects is reported as unavailable (with Meta's reason), never as zero.
+
+@dataclass
+class Metric:
+    key: str
+    label: str
+    value: Optional[float] = None
+    available: bool = True
+    note: Optional[str] = None
+
+
+def _sum_daily(payload: dict[str, Any]) -> Optional[float]:
+    data = payload.get("data") or []
+    if not data:
+        return None
+    values = data[0].get("values") or []
+    numbers = [v.get("value") for v in values if isinstance(v.get("value"), (int, float))]
+    return float(sum(numbers)) if numbers else None
+
+
+def _total_value(payload: dict[str, Any]) -> Optional[float]:
+    data = payload.get("data") or []
+    if not data:
+        return None
+    total = (data[0].get("total_value") or {}).get("value")
+    if isinstance(total, (int, float)):
+        return float(total)
+    values = data[0].get("values") or []
+    if values and isinstance(values[-1].get("value"), (int, float)):
+        return float(values[-1]["value"])
+    if values and isinstance(values[-1].get("value"), dict):  # e.g. reactions by type
+        return float(sum(v for v in values[-1]["value"].values() if isinstance(v, (int, float))))
+    return None
+
+
+async def _metric(object_id: str, token: str, key: str, label: str, params: dict[str, Any],
+                  reader: Any) -> Metric:
+    try:
+        payload = await request("GET", f"{object_id}/insights", token=token, params={"metric": key, **params})
+    except GraphError as error:
+        if error.needs_reconnect:
+            raise
+        return Metric(key, label, None, False, error.message)
+    value = reader(payload)
+    if value is None:
+        return Metric(key, label, None, False, "Meta returned no data for this period.")
+    return Metric(key, label, value)
+
+
+FACEBOOK_PAGE_METRICS = (
+    ("page_media_view", "Views"),
+    ("page_total_media_view_unique", "Viewers"),
+    ("page_post_engagements", "Engagements"),
+    ("page_views_total", "Profile visits"),
+)
+INSTAGRAM_ACCOUNT_METRICS = (
+    ("views", "Views"),
+    ("reach", "Accounts reached"),
+    ("accounts_engaged", "Accounts engaged"),
+    ("total_interactions", "Interactions"),
+)
+FACEBOOK_POST_METRICS = (
+    ("post_media_view", "Views"),
+    ("post_total_media_view_unique", "Viewers"),
+    ("post_reactions_by_type_total", "Reactions"),
+    ("post_clicks", "Clicks"),
+)
+INSTAGRAM_MEDIA_METRICS = (
+    ("views", "Views"),
+    ("reach", "Accounts reached"),
+    ("likes", "Likes"),
+    ("comments", "Comments"),
+    ("saved", "Saves"),
+    ("shares", "Shares"),
+)
+
+
+async def account_insights(platform: str, account_id: str, token: str, since: int, until: int) -> dict[str, Any]:
+    """Account metrics for [since, until) (Unix seconds) plus the current follower count."""
+    if platform == "facebook":
+        params = {"period": "day", "since": since, "until": until}
+        metrics = [await _metric(account_id, token, key, label, params, _sum_daily) for key, label in FACEBOOK_PAGE_METRICS]
+        profile = await request("GET", account_id, token=token, params={"fields": "followers_count,fan_count"})
+        followers = profile.get("followers_count", profile.get("fan_count"))
+    elif platform == "instagram":
+        params = {"period": "day", "metric_type": "total_value", "since": since, "until": until}
+        metrics = [await _metric(account_id, token, key, label, params, _total_value) for key, label in INSTAGRAM_ACCOUNT_METRICS]
+        profile = await request("GET", account_id, token=token, params={"fields": "followers_count,media_count"})
+        followers = profile.get("followers_count")
+    else:
+        raise GraphError(f"Analytics for {platform} are not available.")
+    return {"metrics": metrics, "followers": followers if isinstance(followers, int) else None}
+
+
+async def post_insights(platform: str, external_id: str, token: str) -> list[Metric]:
+    """Lifetime metrics for one published post."""
+    if platform == "facebook":
+        metrics = [await _metric(external_id, token, key, label, {}, _total_value) for key, label in FACEBOOK_POST_METRICS]
+        try:
+            counts = await request("GET", external_id, token=token, params={
+                "fields": "shares,comments.summary(true).limit(0)"})
+            metrics.append(Metric("comments", "Comments", float(((counts.get("comments") or {}).get("summary") or {}).get("total_count", 0))))
+            metrics.append(Metric("shares", "Shares", float((counts.get("shares") or {}).get("count", 0))))
+        except GraphError as error:
+            if error.needs_reconnect:
+                raise
+            metrics.append(Metric("comments", "Comments", None, False, error.message))
+        return metrics
+    if platform == "instagram":
+        return [await _metric(external_id, token, key, label, {}, _total_value) for key, label in INSTAGRAM_MEDIA_METRICS]
+    raise GraphError(f"Analytics for {platform} are not available.")

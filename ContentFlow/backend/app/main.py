@@ -11,7 +11,7 @@ from app.config import ALLOWED_ORIGINS, publisher_interval_seconds, publisher_is
 from app.database import initialize_storage
 from app.observability import RequestIdMiddleware, configure_logging
 from app.publisher import recover_interrupted, run_publisher_scheduler
-from app.routers import ai, assets, auth, posts, social, submissions, webhooks, workspaces
+from app.routers import ai, analytics, assets, auth, posts, social, submissions, webhooks, workspaces
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -64,6 +64,7 @@ app.include_router(auth.router)
 app.include_router(social.router)
 app.include_router(ai.router)
 app.include_router(posts.router)
+app.include_router(analytics.router)
 app.include_router(assets.router)
 app.include_router(submissions.router)
 app.include_router(webhooks.router)

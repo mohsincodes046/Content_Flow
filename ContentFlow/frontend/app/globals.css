@@ -989,3 +989,18 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
 .review-subhead { margin: 8px 0 0; color: #A1A1AA; font-size: 13px; font-weight: 600; }
 @media (max-width: 900px) { .compose-layout { grid-template-columns: 1fr; } }
 .compose-field input[type="checkbox"], .compose-target input[type="checkbox"] { width: auto; padding: 0; accent-color: #8B5CF6; }
+.analytics-view { display: grid; gap: 12px; }
+.analytics-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.analytics-meta { margin-left: auto; color: #A1A1AA; font-size: 11px; }
+.analytics-section { padding: 16px; display: grid; gap: 12px; }
+.analytics-account, .analytics-post { display: grid; gap: 8px; padding: 10px; border: 1px solid #273044; border-radius: 8px; background: #111827; }
+.analytics-account-head { display: grid; gap: 2px; }
+.analytics-account-head small { color: #A1A1AA; font-size: 11px; }
+.analytics-account-head a { color: #A78BFA; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.metric-tile { display: grid; gap: 2px; padding: 10px; border: 1px solid #273044; border-radius: 7px; background: #151C2C; }
+.metric-tile b { font-size: 20px; }
+.metric-tile span { color: #A1A1AA; font-size: 11px; }
+.metric-tile small { color: #71717A; font-size: 10px; line-height: 1.4; }
+.metric-unavailable b { color: #71717A; font-size: 13px; }
+.analytics-footnote { margin: 0; color: #71717A; font-size: 11px; }

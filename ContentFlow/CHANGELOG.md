@@ -4,6 +4,15 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Analytics
+- Facebook Page (views, viewers, engagements, profile visits, followers) and
+  Instagram (views, reach, accounts engaged, interactions, followers) insights
+  for the last 7/28/30 days; per-post metrics for posts published with Content
+  Flow; publishing activity summary.
+- Each metric is requested separately, so a metric Meta has retired shows as
+  "Unavailable" with Meta's reason instead of breaking the page or showing 0.
+- Results cached for an hour per workspace (migration `0005`), with a refresh.
+
 ### Posts, approvals, scheduling and publishing
 - New post model: drafts with media, one target per connected account with an
   optional per-platform caption, live platform checks (Instagram JPEG/aspect
