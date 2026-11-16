@@ -45,6 +45,7 @@ SESSION_LIFETIME = timedelta(days=7)
 SESSION_COOKIE = "content_flow_session"
 ALLOWED_MEDIA_TYPES = ("image/", "video/")
 PASSWORD_HASHER = PasswordHash.recommended()
+DUMMY_PASSWORD_HASH = PASSWORD_HASHER.hash(secrets.token_urlsafe(16))
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR = Path(os.environ.get("CONTENT_FLOW_DATA_DIR", str(DEFAULT_DATA_DIR))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -382,6 +383,16 @@ def initialize_storage() -> None:
             );
             CREATE INDEX IF NOT EXISTS social_accounts_user_idx
                 ON social_accounts(user_id, platform);
+
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+                bucket TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS rate_limit_events_lookup_idx
+                ON rate_limit_events(bucket, subject, created_at);
+            CREATE INDEX IF NOT EXISTS rate_limit_events_created_idx
+                ON rate_limit_events(created_at);
             """
         )
         submission_columns = {
@@ -481,6 +492,103 @@ def public_frontend_url() -> str:
     return os.environ.get("CONTENT_FLOW_FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 
+RATE_LIMIT_RETENTION = timedelta(days=2)
+
+
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be an integer.") from error
+    if value < minimum:
+        raise RuntimeError(f"{name} must be at least {minimum}.")
+    return value
+
+
+def client_ip(request: Request) -> str:
+    """Best-effort client address.
+
+    On Render, requests arrive through Render's proxy, which appends the real
+    client address as the last X-Forwarded-For entry; earlier entries are
+    client-controlled and must not be trusted.
+    """
+    if os.environ.get("RENDER"):
+        forwarded = request.headers.get("x-forwarded-for", "")
+        candidates = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if candidates:
+            return candidates[-1]
+    return request.client.host if request.client else "unknown"
+
+
+def count_recent_events(
+    connection: sqlite3.Connection, bucket: str, subject: str, window: timedelta, now: datetime
+) -> tuple[int, Optional[str]]:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS total, MIN(created_at) AS oldest FROM rate_limit_events
+        WHERE bucket = ? AND subject = ? AND created_at > ?
+        """,
+        (bucket, subject, (now - window).isoformat()),
+    ).fetchone()
+    return row["total"], row["oldest"]
+
+
+def rate_limited(retry_after: datetime, now: datetime, detail: str) -> HTTPException:
+    seconds = max(1, int((retry_after - now).total_seconds()) + 1)
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=detail,
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+def check_rate_limit(
+    bucket: str,
+    subject: str,
+    limit: int,
+    window: timedelta,
+    *,
+    record: bool = True,
+    detail: str = "Too many requests. Please wait and try again.",
+) -> None:
+    """Raise 429 when `subject` already has `limit` events in `window`; otherwise
+    optionally record one more event. Runs in one write transaction so
+    concurrent requests cannot both pass the final slot."""
+    now = datetime.now(timezone.utc)
+    with connect_database() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM rate_limit_events WHERE created_at < ?",
+            ((now - RATE_LIMIT_RETENTION).isoformat(),),
+        )
+        total, oldest = count_recent_events(connection, bucket, subject, window, now)
+        if total >= limit and oldest is not None:
+            raise rate_limited(datetime.fromisoformat(oldest) + window, now, detail)
+        if record:
+            connection.execute(
+                "INSERT INTO rate_limit_events (bucket, subject, created_at) VALUES (?, ?, ?)",
+                (bucket, subject, now.isoformat()),
+            )
+
+
+def record_rate_limit_event(bucket: str, subject: str) -> None:
+    with connect_database() as connection:
+        connection.execute(
+            "INSERT INTO rate_limit_events (bucket, subject, created_at) VALUES (?, ?, ?)",
+            (bucket, subject, utc_now()),
+        )
+
+
+def ai_limits() -> tuple[int, int]:
+    return (
+        env_int("CONTENT_FLOW_AI_PER_MINUTE_LIMIT", 10),
+        env_int("CONTENT_FLOW_AI_DAILY_LIMIT", 50),
+    )
+
+
 def create_session(user_id: str, response: Response) -> None:
     raw_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
@@ -548,7 +656,14 @@ def session_response(user: sqlite3.Row) -> SessionResponse:
 
 
 @app.post("/api/auth/register", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
-def register(payload: RegistrationCreate, response: Response) -> SessionResponse:
+def register(payload: RegistrationCreate, request: Request, response: Response) -> SessionResponse:
+    check_rate_limit(
+        "register_ip",
+        client_ip(request),
+        env_int("CONTENT_FLOW_REGISTER_PER_HOUR_LIMIT", 5),
+        timedelta(hours=1),
+        detail="Too many accounts were created from this network. Please try again later.",
+    )
     user_id = str(uuid4())
     workspace_id = str(uuid4())
     created_at = utc_now()
@@ -599,8 +714,16 @@ def register(payload: RegistrationCreate, response: Response) -> SessionResponse
 
 
 @app.post("/api/auth/login", response_model=SessionResponse)
-def login(payload: LoginCreate, response: Response) -> SessionResponse:
+def login(payload: LoginCreate, request: Request, response: Response) -> SessionResponse:
     email = str(payload.email).strip().lower()
+    login_window = timedelta(minutes=15)
+    too_many = "Too many sign-in attempts. Please wait a few minutes and try again."
+    check_rate_limit(
+        "login_ip", client_ip(request), env_int("CONTENT_FLOW_LOGIN_PER_IP_LIMIT", 20), login_window,
+        detail=too_many,
+    )
+    failed_limit = env_int("CONTENT_FLOW_LOGIN_FAILURES_PER_EMAIL_LIMIT", 5)
+    check_rate_limit("login_failed_email", email, failed_limit, login_window, record=False, detail=too_many)
     with connect_database() as connection:
         user = connection.execute(
             """
@@ -614,7 +737,11 @@ def login(payload: LoginCreate, response: Response) -> SessionResponse:
             (email,),
         ).fetchone()
 
-    if user is None or not PASSWORD_HASHER.verify(payload.password, user["password_hash"]):
+    # Hash even for unknown emails so response timing does not reveal which accounts exist.
+    password_hash = user["password_hash"] if user is not None else DUMMY_PASSWORD_HASH
+    password_ok = PASSWORD_HASHER.verify(payload.password, password_hash)
+    if user is None or not password_ok:
+        record_rate_limit_event("login_failed_email", email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email or password is incorrect.",
@@ -1159,7 +1286,7 @@ async def call_caption_provider(provider: str, api_key: str, model: str, prompt:
 @app.post("/api/ai/captions", response_model=CaptionGenerationResponse)
 async def generate_platform_captions(
     payload: CaptionGenerationRequest,
-    _: Annotated[sqlite3.Row, Depends(get_current_user)],
+    user: Annotated[sqlite3.Row, Depends(get_current_user)],
 ) -> CaptionGenerationResponse:
     provider = os.environ.get("CONTENT_FLOW_AI_PROVIDER", "claude").strip().lower()
     provider_config = {
@@ -1173,6 +1300,17 @@ async def generate_platform_captions(
     api_key = os.environ.get(key_name, "").strip()
     if not api_key:
         raise HTTPException(status_code=503, detail=f"Configure {key_name} on the backend to generate captions.")
+
+    per_minute, per_day = ai_limits()
+    check_rate_limit(
+        "ai_minute", user["id"], per_minute, timedelta(minutes=1),
+        detail="You are generating captions too quickly. Please wait a moment.",
+    )
+    # Every provider call counts toward the daily quota, because failed calls can still be billed.
+    check_rate_limit(
+        "ai_daily", user["id"], per_day, timedelta(days=1),
+        detail=f"You have used all {per_day} AI caption generations for the last 24 hours.",
+    )
 
     model = os.environ.get(model_name, default_model).strip()
     platform_guidance = {
@@ -1210,6 +1348,21 @@ async def generate_platform_captions(
     if set(generated_platforms) != set(payload.platforms) or len(generated_platforms) != len(payload.platforms):
         raise HTTPException(status_code=502, detail="The AI provider did not return one caption per selected platform.")
     return CaptionGenerationResponse(provider=provider, posts=generated.posts)
+
+
+class AIUsageResponse(BaseModel):
+    used_last_24h: int
+    daily_limit: int
+    remaining: int
+
+
+@app.get("/api/ai/usage", response_model=AIUsageResponse)
+def ai_usage(user: Annotated[sqlite3.Row, Depends(get_current_user)]) -> AIUsageResponse:
+    _, per_day = ai_limits()
+    now = datetime.now(timezone.utc)
+    with connect_database() as connection:
+        used, _ = count_recent_events(connection, "ai_daily", user["id"], timedelta(days=1), now)
+    return AIUsageResponse(used_last_24h=used, daily_limit=per_day, remaining=max(0, per_day - used))
 
 
 @app.get("/api/scheduled-posts", response_model=list[ScheduledPostResponse])

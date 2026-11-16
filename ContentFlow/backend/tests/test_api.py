@@ -1266,3 +1266,98 @@ def test_webhook_events_require_a_valid_meta_signature(
     assert wrong_secret.status_code == 401
     assert missing.status_code == 401
     assert tampered.status_code == 401
+
+
+def test_repeated_failed_logins_lock_the_email_temporarily(client: TestClient) -> None:
+    client.post("/api/auth/logout")
+    for _ in range(5):
+        failed = client.post("/api/auth/login", json={"email": "test@example.com", "password": "wrong-password"})
+        assert failed.status_code == 401
+
+    locked = client.post("/api/auth/login", json={"email": "test@example.com", "password": "correct-horse-battery"})
+
+    assert locked.status_code == 429
+    assert int(locked.headers["Retry-After"]) > 0
+    other_account = client.post("/api/auth/login", json={"email": "other@example.com", "password": "anything"})
+    assert other_account.status_code == 401
+
+
+def test_registration_is_rate_limited_per_network(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_REGISTER_PER_HOUR_LIMIT", "2")
+    account = {"full_name": "New Person", "workspace_name": "New Workspace", "password": "correct-horse-battery"}
+
+    second = client.post("/api/auth/register", json={**account, "email": "second@example.com"})
+    third = client.post("/api/auth/register", json={**account, "email": "third@example.com"})
+
+    assert second.status_code == 201
+    assert third.status_code == 429
+
+
+def test_ai_caption_daily_quota_counts_every_provider_call(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "2")
+    calls: list[str] = []
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+        calls.append(provider)
+        if len(calls) == 1:
+            raise httpx.ConnectError("provider unavailable")
+        return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
+
+    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
+
+    failed = client.post("/api/ai/captions", json=request)
+    succeeded = client.post("/api/ai/captions", json=request)
+    over_quota = client.post("/api/ai/captions", json=request)
+    usage = client.get("/api/ai/usage")
+
+    assert failed.status_code == 502
+    assert succeeded.status_code == 200
+    assert over_quota.status_code == 429
+    assert len(calls) == 2
+    assert usage.json() == {"used_last_24h": 2, "daily_limit": 2, "remaining": 0}
+
+
+def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "1")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+        return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
+
+    monkeypatch.setattr(main, "call_caption_provider", fake_provider)
+    request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
+    assert client.post("/api/ai/captions", json=request).status_code == 200
+    assert client.post("/api/ai/captions", json=request).status_code == 429
+
+    client.post(
+        "/api/auth/register",
+        json={
+            "full_name": "Second User",
+            "workspace_name": "Second Workspace",
+            "email": "second@example.com",
+            "password": "correct-horse-battery",
+        },
+    )
+    assert client.post("/api/ai/captions", json=request).status_code == 200
+
+
+def test_client_ip_uses_render_proxy_address_only_on_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    from starlette.requests import Request as StarletteRequest
+
+    request = StarletteRequest({
+        "type": "http",
+        "headers": [(b"x-forwarded-for", b"1.1.1.1, 203.0.113.9")],
+        "client": ("10.0.0.5", 1234),
+    })
+
+    monkeypatch.delenv("RENDER", raising=False)
+    assert main.client_ip(request) == "10.0.0.5"
+    monkeypatch.setenv("RENDER", "true")
+    assert main.client_ip(request) == "203.0.113.9"
