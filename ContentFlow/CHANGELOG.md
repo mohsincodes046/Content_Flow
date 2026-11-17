@@ -4,6 +4,9 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Startup warnings for local settings on a host
+- On Render or Koyeb the API logs `DEPLOYMENT CONFIG:` warnings when public URLs or CORS origins still point at localhost or ngrok, when there is no PostgreSQL URL (SQLite would be erased), or when Cloudinary or secure cookies are missing.
+
 ### Frontend uses the live Render API on Vercel
 - One shared `apiUrl` in `frontend/lib/api.ts`. The three components no longer hard-code `http://localhost:8000`.
 - Vercel builds proxy `/api/*` to `https://content-flow-wqzd.onrender.com` by default (override with `CONTENT_FLOW_API_INTERNAL_URL`). The browser calls same-site `/api`, so the SameSite=Lax session cookie keeps working.

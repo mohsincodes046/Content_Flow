@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import ALLOWED_ORIGINS, publisher_interval_seconds, publisher_is_enabled
+from app.config import ALLOWED_ORIGINS, deployment_warnings, publisher_interval_seconds, publisher_is_enabled
 from app.database import initialize_storage
 from app.observability import RequestIdMiddleware, configure_logging
 from app.publisher import recover_interrupted, run_publisher_scheduler, wake_publisher
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    for warning in deployment_warnings():
+        logger.warning("DEPLOYMENT CONFIG: %s", warning)
     initialize_storage()
     publisher_task = None
     if publisher_is_enabled():

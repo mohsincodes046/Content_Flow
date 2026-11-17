@@ -45,6 +45,34 @@ def public_frontend_url() -> str:
     return os.environ.get("CONTENT_FLOW_FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
 
+_DEV_HOST_MARKERS = ("localhost", "127.0.0.1", "ngrok")
+
+
+def deployment_warnings() -> list[str]:
+    """Settings that work locally but break a hosted deployment (no secrets in the text).
+    Only checked on a host (Render, Koyeb or CONTENT_FLOW_COOKIE_SECURE=true)."""
+    hosted = any(os.environ.get(k) for k in ("RENDER", "KOYEB_APP_NAME", "KOYEB_SERVICE_NAME")) or \
+        os.environ.get("CONTENT_FLOW_COOKIE_SECURE", "").lower() == "true"
+    if not hosted:
+        return []
+    warnings = []
+    for name, value in (("CONTENT_FLOW_API_PUBLIC_URL", public_api_url()),
+                        ("CONTENT_FLOW_FRONTEND_URL", public_frontend_url()),
+                        ("CONTENT_FLOW_ALLOWED_ORIGINS", ",".join(ALLOWED_ORIGINS))):
+        if any(marker in value for marker in _DEV_HOST_MARKERS) or not value.startswith("https://"):
+            warnings.append(f"{name} is {value!r}; set it to the public https:// web app URL "
+                            "(OAuth redirects and CORS use it).")
+    if not os.environ.get("CONTENT_FLOW_DATABASE_URL", "").strip():
+        warnings.append("CONTENT_FLOW_DATABASE_URL is not set: using a SQLite file, which a host without a "
+                        "persistent disk erases on every restart or redeploy. Set a PostgreSQL URL (e.g. Neon).")
+    if not os.environ.get("CLOUDINARY_URL", "").strip():
+        warnings.append("CLOUDINARY_URL is not set: uploads are stored on local disk, which a host without a "
+                        "persistent disk erases, and proxied uploads are limited by the web host.")
+    if os.environ.get("CONTENT_FLOW_COOKIE_SECURE", "").lower() != "true":
+        warnings.append("CONTENT_FLOW_COOKIE_SECURE is not 'true'.")
+    return warnings
+
+
 
 def env_int(name: str, default: int, minimum: int = 1) -> int:
     raw = os.environ.get(name, "").strip()
