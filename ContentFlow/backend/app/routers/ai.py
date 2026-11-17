@@ -67,6 +67,14 @@ async def generate_platform_captions(
         generated = CaptionDrafts.model_validate_json(generated_text)
     except httpx.TimeoutException as error:
         raise HTTPException(status_code=502, detail="The AI provider timed out. Please try again.") from error
+    except httpx.HTTPStatusError as error:
+        code = error.response.status_code
+        if code == 429:
+            # Common on free tiers (e.g. Gemini's per-minute and per-day request limits).
+            raise HTTPException(status_code=503, detail="The AI provider's usage limit was reached. Please try again in a minute.") from error
+        if code in (401, 403):
+            raise HTTPException(status_code=503, detail="The AI provider rejected the API key. Check the key on the backend.") from error
+        raise HTTPException(status_code=502, detail="The AI provider could not generate captions.") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail="The AI provider could not generate captions.") from error
     except ValueError as error:

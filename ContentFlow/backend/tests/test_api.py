@@ -697,6 +697,42 @@ def test_claude_provider_sends_anthropic_messages_request(
     assert response_text == '{"posts":[]}'
 
 
+def test_gemini_provider_request_and_free_tier_errors(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    status = {"code": 200}
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        assert request.headers["x-goog-api-key"] == "test-gemini-key"
+        body = json.loads(request.content)
+        assert body["generationConfig"]["responseMimeType"] == "application/json"
+        if status["code"] != 200:
+            return httpx.Response(status["code"], json={"error": {"message": "nope"}})
+        text = '{"posts":[{"platform":"facebook","caption":"Fresh bread today.","hashtags":["Bakery"]}]}'
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    payload = {"topic": "Fresh bread", "audience": "Neighbours", "platforms": ["facebook"]}
+
+    ok = client.post("/api/ai/captions", json=payload)
+    assert ok.status_code == 200
+    assert ok.json()["provider"] == "gemini"
+    assert ok.json()["posts"][0]["caption"] == "Fresh bread today."
+
+    status["code"] = 429
+    limited = client.post("/api/ai/captions", json=payload)
+    assert limited.status_code == 503
+    assert "usage limit" in limited.json()["detail"]
+
+    status["code"] = 403
+    bad_key = client.post("/api/ai/captions", json=payload)
+    assert bad_key.status_code == 503
+    assert "API key" in bad_key.json()["detail"]
+
+
 def test_reject_invalid_platform_and_duplicate_platforms(client: TestClient) -> None:
     payload = {
         "campaign": "",
