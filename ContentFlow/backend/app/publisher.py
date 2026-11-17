@@ -99,26 +99,24 @@ async def _send(target: dict, post: dict, account: dict, media_rows: list[dict])
             tokens = await tiktok_api.refresh(tokens)
             _save_tokens(account["id"], tokens)
         video = media_rows[0]
-        return await tiktok_api.publish_video(tokens["access_token"], caption, media.asset_path(video["storage_name"]),
+        return await tiktok_api.publish_video(tokens["access_token"], caption, await asyncio.to_thread(media.local_file, video["storage_name"]),
                                               video["media_type"])
     if target["platform"] == "linkedin":
         if linkedin_api.expired(tokens):
             raise meta_graph.GraphError("The LinkedIn connection has expired. Reconnect it.", code=190)
-        images = [(media.asset_path(m["storage_name"]), m["media_type"]) for m in media_rows]
+        images = [(await asyncio.to_thread(media.local_file, m["storage_name"]), m["media_type"]) for m in media_rows]
         return await linkedin_api.publish(account["account_id"], tokens["access_token"], caption, images)
     token = tokens.get("access_token")
     if not token:
         raise meta_graph.GraphError("No access token is stored for this account. Reconnect it.", code=190)
     if target["platform"] == "facebook":
-        files = [meta_graph.MediaFile(media.asset_path(m["storage_name"]), m["filename"], m["media_type"]) for m in media_rows]
+        files = [meta_graph.MediaFile(await asyncio.to_thread(media.local_file, m["storage_name"]), m["filename"], m["media_type"])
+                 for m in media_rows]
         return await meta_graph.publish_facebook(account["account_id"], token, caption, files)
     if target["platform"] == "instagram":
-        items = []
-        for m in media_rows:
-            if m["media_type"].startswith("image/"):
-                items.append(("image/jpeg", media.signed_media_url(media.instagram_image(m["storage_name"], m["media_type"]))))
-            else:
-                items.append((m["media_type"], media.signed_media_url(m["storage_name"])))
+        items = [("image/jpeg" if m["media_type"].startswith("image/") else m["media_type"],
+                  await asyncio.to_thread(media.instagram_media_url, m["storage_name"], m["media_type"]))
+                 for m in media_rows]
         return await meta_graph.publish_instagram(account["account_id"], token, caption, items)
     raise meta_graph.GraphError(f"Publishing to {target['platform']} is not available yet.")
 

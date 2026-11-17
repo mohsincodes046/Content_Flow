@@ -10,7 +10,7 @@ import AccountsSection from "./AccountsSection";
 import AnalyticsView from "./AnalyticsView";
 import TeamSection from "./TeamSection";
 import WorkspaceSwitcher, { NoWorkspace } from "./WorkspaceSwitcher";
-import { api, assetUrl, browserTimezone, canEditContent, isSessionUser, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
+import { api, assetUrl, browserTimezone, canEditContent, isSessionUser, uploadAsset, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
 import ComposePost from "./ComposePost";
 import PostsList from "./PostsList";
 import ReviewQueue from "./ReviewQueue";
@@ -290,13 +290,7 @@ export default function DashboardApp({ section }: { section: string }) {
     setMediaUploading(true);
     try {
       for (const file of accepted) {
-        const formData = new FormData();
-        formData.append("file", file);
-        const response = await fetch(`${apiUrl}/api/assets`, {
-          method: "POST",
-          credentials: "include",
-          body: formData,
-        });
+        const response = await uploadAsset(file);
         if (!response.ok) throw new Error(await apiErrorMessage(response, `Unable to upload ${file.name}`));
         const uploaded: unknown = await response.json();
         if (

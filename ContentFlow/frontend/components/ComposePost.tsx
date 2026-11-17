@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import {
-  api, assetUrl, browserTimezone, canEditContent, formatWhen, statusLabels, toLocalInput,
+  api, ApiError, apiErrorMessage, assetUrl, browserTimezone, canEditContent, formatWhen, statusLabels, toLocalInput, uploadAsset,
   type Asset, type Post, type SessionUser,
 } from "../lib/api";
 import type { SocialAccount } from "./AccountsSection";
@@ -135,9 +135,9 @@ export default function ComposePost({ user, setNotice }: { user: SessionUser; se
     setBusy("upload");
     try {
       for (const file of files) {
-        const body = new FormData();
-        body.append("file", file);
-        const asset = await api<Asset>("/api/assets", { method: "POST", body }, `Unable to upload ${file.name}`);
+        const response = await uploadAsset(file);
+        if (!response.ok) throw new ApiError(await apiErrorMessage(response, `Unable to upload ${file.name}`), response.status);
+        const asset = (await response.json()) as Asset;
         setLibrary((current) => [asset, ...current]);
         setDraft((current) => ({ ...current, assetIds: [...current.assetIds, asset.id] }));
       }

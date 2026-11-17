@@ -4,6 +4,15 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Free-tier production stack (Koyeb + Neon + Cloudinary + Vercel)
+- Optional Cloudinary media storage (`CLOUDINARY_URL`): the browser uploads straight to
+  Cloudinary with a one-file signed upload chosen by the API, then the API registers it
+  from Cloudinary's own record (type, size, dimensions). Instagram receives Cloudinary
+  URLs (JPEG ≤ 1440 px via Cloudinary transformation); Facebook gets the bytes. Deleting
+  an asset deletes the remote file. Local disk storage is unchanged when unset.
+- AI captions: clear messages when the provider's rate limit is hit or the key is
+  rejected; Gemini request path tested.
+
 ### Facebook + Instagram go-live preparation
 - Meta login requests `pages_manage_posts` again; `read_insights` is requested only when
   `META_EXTRA_SCOPES` includes it (Meta rejects the whole login for permissions that are

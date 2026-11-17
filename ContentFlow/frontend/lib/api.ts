@@ -102,3 +102,39 @@ export function toLocalInput(iso: string | null): string {
 export const formatWhen = (iso: string | null) => iso
   ? new Date(iso).toLocaleString("en", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
   : "Not scheduled";
+
+type UploadTarget =
+  | { mode: "local" }
+  | { mode: "cloudinary"; asset_id: string; upload_url: string; fields: Record<string, string | number> };
+
+/**
+ * Upload one file to the media library. Locally it goes to the API; in production the API
+ * hands out a one-file signed Cloudinary upload, the browser sends the file straight there
+ * (no proxy body limits), and the API then registers it. Resolves to the API's response,
+ * whose JSON body is the new Asset.
+ */
+export async function uploadAsset(file: File): Promise<Response> {
+  const targetResponse = await fetch(`${apiUrl}/api/assets/upload-target`, { credentials: "include" });
+  if (!targetResponse.ok) return targetResponse;
+  const target = (await targetResponse.json()) as UploadTarget;
+  if (target.mode !== "cloudinary") {
+    const body = new FormData();
+    body.append("file", file);
+    return fetch(`${apiUrl}/api/assets`, { method: "POST", credentials: "include", body });
+  }
+  const body = new FormData();
+  for (const [key, value] of Object.entries(target.fields)) body.append(key, String(value));
+  body.append("file", file);
+  const uploaded = await fetch(target.upload_url, { method: "POST", body });
+  if (!uploaded.ok) {
+    const payload = (await uploaded.json().catch(() => null)) as { error?: { message?: string } } | null;
+    const detail = payload?.error?.message ?? `The media service rejected ${file.name}`;
+    return new Response(JSON.stringify({ detail }), { status: uploaded.status, headers: { "Content-Type": "application/json" } });
+  }
+  return fetch(`${apiUrl}/api/assets/cloudinary`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset_id: target.asset_id, filename: file.name }),
+  });
+}
