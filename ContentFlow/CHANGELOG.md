@@ -4,6 +4,13 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Facebook + Instagram go-live preparation
+- Privacy Policy, Terms of Service and Data Deletion pages, linked from the site footer.
+- Meta App Review package (`docs/META_APP_REVIEW.md`): permissions mapped to code,
+  dashboard settings, reviewer steps, recording checklist, owner items.
+- Local database migrated to `0005_analytics_cache` after a verified backup;
+  background publisher enabled locally.
+
 ### TikTok and LinkedIn
 - TikTok: Login Kit OAuth, account discovery, direct video posting (upload,
   status polling, published only on PUBLISH_COMPLETE), automatic token refresh.

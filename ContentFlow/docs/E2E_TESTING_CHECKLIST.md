@@ -4,7 +4,7 @@ Use real accounts you control. Tick each line; note anything unexpected.
 
 ## 0. One-time setup (owner)
 
-- [ ] Back up and migrate the local database: in `backend`, run
+- [x] Back up and migrate the local database: in `backend`, run
       `python -m app.migrate upgrade` (takes a verified backup first). Expect
       "Database is at revision 0005_analytics_cache".
 - [ ] `backend/.env`: `META_APP_ID`, `META_APP_SECRET`, `CONTENT_FLOW_TOKEN_ENCRYPTION_KEY`,

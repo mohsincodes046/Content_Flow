@@ -17,7 +17,7 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Content drafts, platform versions, media library | ✅ | |
 | Client approval workflow | ✅ | |
 | Facebook and Instagram publishing | ✅ | Live posting needs a real Page/IG account (manual test) |
-| Scheduling worker with retries | ✅ | Enable with `CONTENT_FLOW_PUBLISHER_ENABLED=true` |
+| Scheduling worker with retries | ✅ | Enabled locally (`CONTENT_FLOW_PUBLISHER_ENABLED=true`) |
 | Analytics | ✅ | Live numbers need connected accounts with insights permission (manual test) |
 | TikTok, LinkedIn | ✅ code / 🔒 live | Needs app credentials; TikTok audit for public posts; LinkedIn approval for company Pages |
 
@@ -26,12 +26,18 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 - Confirm in the Render dashboard which branch (if any) Render deploys from,
   and set the Blueprint Path to `ContentFlow/render.yaml`.
 - Approval before provisioning a paid PostgreSQL database.
-- Approval before migrating the real local database to new schema versions.
-  It is at `0001_baseline`; the code needs `0005_analytics_cache`, so the
-  local API refuses to start until `python -m app.migrate upgrade` is run
-  (it takes a verified backup first). Rehearsed successfully on a copy.
+- Facebook + Instagram go-live (current phase): add the OAuth redirect,
+  deauthorize and data-deletion URLs in the Meta app, connect a test Page with
+  a linked Instagram professional account, approve the first real test post,
+  provide the real support email. App Review package: `docs/META_APP_REVIEW.md`.
+- `INSTAGRAM_ACCESS_TOKEN` in `backend/.env` is not referenced by any code;
+  revoking it in Meta is recommended (owner decision).
 
 ## Real data safety
 
-- Verified backup of the real local database:
-  `backend/data/backups/content_flow-20261116-141501-before-sqlalchemy.sqlite3`.
+- Verified backups of the real local database:
+  `backend/data/backups/content_flow-20261116-141501-before-sqlalchemy.sqlite3`,
+  `backend/data/backups/content_flow-20261117-130959-before-upgrade.sqlite3`.
+- 17 Nov 2026: real local database migrated `0001_baseline` → `0005_analytics_cache`
+  (owner-approved). Integrity check ok; users, workspaces, sessions, social
+  account and assets unchanged; the 3 legacy scheduled posts are now drafts.
