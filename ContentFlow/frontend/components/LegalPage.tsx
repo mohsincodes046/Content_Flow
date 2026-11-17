@@ -2,10 +2,10 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import Logo from "./Logo";
 
-// Owner: replace before submitting to Meta App Review.
+// Support contact shown on the legal pages.
 export const LEGAL_CONTACT = {
   company: "Content Flow",
-  email: "[your support email]",
+  email: "zotalalix@gmail.com",
   updated: "16 November 2026",
 };
 
