@@ -79,5 +79,149 @@ export default function AuthPage({ mode }: Props) {
     }
   }
 
-  return <main className="auth-page"><nav className="marketing-nav"><Logo /><Link className="auth-back-link" href="/">← Back home</Link></nav><section className="auth-shell"><div className="auth-illustration"><div className="auth-orbit auth-orbit-one" /><div className="auth-orbit auth-orbit-two" /><div className="auth-note-card"><span className="auth-note-spark">✳</span><b>A little more room for the good stuff.</b><span>Ideas, all in a row.</span></div><span className="auth-floating-star">✦</span><div className="auth-quote"><span>✦ A SMALL REMINDER</span><p>You don&apos;t have to do it all at once.</p></div></div><div className="auth-form-side"><span className="eyebrow page-eyebrow"><span className="live-dot" /> {copy.eyebrow}</span><h1>{copy.title}</h1><p className="auth-description">{copy.detail}</p><form className="auth-form" onSubmit={handleSubmit}>{isSignUp && <><label><span>YOUR NAME</span><input name="full_name" required maxLength={100} placeholder="Alex Morgan" autoComplete="name" /></label><label><span>WORKSPACE NAME</span><input name="workspace_name" required maxLength={120} placeholder="Good Things Studio" autoComplete="organization" /></label></>}<label><span>EMAIL ADDRESS</span><input name="email" required type="email" maxLength={254} placeholder="you@yourcompany.com" autoComplete="email" /></label>{!isForgot && <label><span>PASSWORD</span><input name="password" required type="password" minLength={isSignUp ? 8 : 1} maxLength={128} placeholder={isReset ? "At least 8 characters" : "Your Content-Flow password"} autoComplete={isSignUp || isReset ? "new-password" : "current-password"} />{isSignUp && <small>Use 8+ characters. This is your Content-Flow password — don&apos;t use your email password.</small>}</label>}{mode === "login" && <Link className="auth-forgot" href="/forgot-password">Forgot password?</Link>}<button className="button button-primary auth-submit" type="submit" disabled={isSubmitting}>{isSubmitting ? "Please wait…" : isSignUp ? "Create my account" : isForgot ? "Send me a reset link" : isReset ? "Save my new password" : "Sign in"} {!isSubmitting && <span>↗</span>}</button></form>{notice && <div className="auth-notice" role="status"><span>✳</span><p>{notice}</p></div>}{isForgot && <Link className="auth-return" href="/login">← Back to sign in</Link>}{!isForgot && !isReset && <p className="auth-switch">{isSignUp ? "Already have an account?" : "New around here?"} <Link href={isSignUp ? "/login" : "/signup"}>{isSignUp ? "Sign in" : "Get started"}</Link></p>}{isReset && <p className="auth-switch">Need to request a reset link? <Link href="/forgot-password">Start here</Link></p>}<p className="auth-fineprint">Your content is yours. Your account should be, too.</p></div></section></main>;
+return (
+  <main className="auth-page">
+    <nav className="marketing-nav">
+      <Logo />
+      <Link className="auth-back-link" href="/">
+        ← Back home
+      </Link>
+    </nav>
+    <section className="auth-shell">
+      <div className="auth-illustration">
+        <div className="auth-orbit auth-orbit-one" />
+        <div className="auth-orbit auth-orbit-two" />
+        <div className="auth-note-card">
+          <span className="auth-note-spark">✳</span>
+          <b>A little more room for the good stuff.</b>
+          <span>Ideas, all in a row.</span>
+        </div>
+        <span className="auth-floating-star">✦</span>
+        <div className="auth-quote">
+          <span>✦ A SMALL REMINDER</span>
+          <p>You don&apos;t have to do it all at once.</p>
+        </div>
+      </div>
+      <div className="auth-form-side">
+        <span className="eyebrow page-eyebrow">
+          <span className="live-dot" /> {copy.eyebrow}
+        </span>
+        <h1>{copy.title}</h1>
+        <p className="auth-description">{copy.detail}</p>
+        <form className="auth-form" onSubmit={handleSubmit}>
+          {isSignUp && (
+            <>
+              <label>
+                <span>YOUR NAME</span>
+                <input
+                  name="full_name"
+                  required
+                  maxLength={100}
+                  placeholder="Alex Morgan"
+                  autoComplete="name"
+                />
+              </label>
+              <label>
+                <span>WORKSPACE NAME</span>
+                <input
+                  name="workspace_name"
+                  required
+                  maxLength={120}
+                  placeholder="Good Things Studio"
+                  autoComplete="organization"
+                />
+              </label>
+            </>
+          )}
+          <label>
+            <span>EMAIL ADDRESS</span>
+            <input
+              name="email"
+              required
+              type="email"
+              maxLength={254}
+              placeholder="you@yourcompany.com"
+              autoComplete="email"
+            />
+          </label>
+          {!isForgot && (
+            <label>
+              <span>PASSWORD</span>
+              <input
+                name="password"
+                required
+                type="password"
+                minLength={isSignUp ? 8 : 1}
+                maxLength={128}
+                placeholder={
+                  isReset
+                    ? "At least 8 characters"
+                    : "Your Content-Flow password"
+                }
+                autoComplete={
+                  isSignUp || isReset ? "new-password" : "current-password"
+                }
+              />
+              {isSignUp && (
+                <small>
+                  Use 8+ characters. This is your Content-Flow password —
+                  don&apos;t use your email password.
+                </small>
+              )}
+            </label>
+          )}
+          {mode === "login" && (
+            <Link className="auth-forgot" href="/forgot-password">
+              Forgot password?
+            </Link>
+          )}
+          <button
+            className="button button-primary auth-submit"
+            type="submit"
+            disabled={isSubmitting}
+          >
+            {isSubmitting
+              ? "Please wait…"
+              : isSignUp
+              ? "Create my account"
+              : isForgot
+              ? "Send me a reset link"
+              : isReset
+              ? "Save my new password"
+              : "Sign in"}{" "}
+            {!isSubmitting && <span>↗</span>}
+          </button>
+        </form>
+        {notice && (
+          <div className="auth-notice" role="status">
+            <span>✳</span>
+            <p>{notice}</p>
+          </div>
+        )}
+        {isForgot && (
+          <Link className="auth-return" href="/login">
+            ← Back to sign in
+          </Link>
+        )}
+        {!isForgot && !isReset && (
+          <p className="auth-switch">
+            {isSignUp ? "Already have an account?" : "New around here?"}{" "}
+            <Link href={isSignUp ? "/login" : "/signup"}>
+              {isSignUp ? "Sign in" : "Get started"}
+            </Link>
+          </p>
+        )}
+        {isReset && (
+          <p className="auth-switch">
+            Need to request a reset link?{" "}
+            <Link href="/forgot-password">Start here</Link>
+          </p>
+        )}
+        <p className="auth-fineprint">
+          Your content is yours. Your account should be, too.
+        </p>
+      </div>
+    </section>
+  </main>
+);
 }

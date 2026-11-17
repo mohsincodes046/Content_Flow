@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { uploadAsset } from "../lib/api";
 
 type Platform = "instagram" | "facebook" | "linkedin" | "youtube" | "tiktok";
 type UploadedAsset = {
@@ -153,9 +154,7 @@ export default function SubmissionWorkflow({
     const assets: UploadedAsset[] = [];
     try {
       for (const file of accepted) {
-        const body = new FormData();
-        body.append("file", file);
-        const response = await fetch(`${apiUrl}/api/assets`, { method: "POST", credentials: "include", body });
+        const response = await uploadAsset(file);
         if (!response.ok) throw new Error(await responseError(response));
         const asset: unknown = await response.json();
         if (!isAsset(asset)) throw new Error("The server returned an unexpected upload response.");

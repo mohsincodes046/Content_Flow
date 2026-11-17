@@ -2,14 +2,25 @@
   "name": "contentflow",
   "version": "1.0.0",
   "main": "index.js",
+  "private": true,
   "directories": {
     "lib": "lib"
   },
   "scripts": {
+    "dev": "concurrently -n API,WEB -c blue,green \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app --reload",
+    "dev:web": "cd frontend && npm run dev",
+    "start": "concurrently -n API,WEB -c blue,green \"npm:start:api\" \"npm:start:web\"",
+    "start:api": "cd backend && .venv\\Scripts\\python.exe -m uvicorn app.main:app",
+    "start:web": "cd frontend && npm run start",
+    "build:web": "cd frontend && npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "description": "",
+  "devDependencies": {
+    "concurrently": "^10.0.6"
+  }
 }

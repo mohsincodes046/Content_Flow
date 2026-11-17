@@ -9,6 +9,8 @@ const dashboardSections = [
   "dashboard",
   "content",
   "calendar",
+  "posts",
+  "compose",
   "bulk-schedule",
   "create-post",
   "review-queue",

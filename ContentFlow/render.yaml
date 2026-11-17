@@ -1,0 +1,75 @@
+# Render Blueprint. This file is not at the repository root, so set the
+# Blueprint's "Blueprint Path" to ContentFlow/render.yaml when creating it.
+# rootDir values are relative to the repository root.
+#
+# No public URLs are hard-coded: Render assigns each service its own
+# *.onrender.com address, and service names are global (the plain service
+# names here are already taken by other Render users), so every URL comes
+# from RENDER_EXTERNAL_URL.
+services:
+  - type: web
+    name: contentflow-api
+    runtime: python
+    rootDir: ContentFlow/backend
+    region: oregon
+    plan: 0.5c-512mb
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    disk:
+      name: contentflow-data
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: CONTENT_FLOW_DATA_DIR
+        value: /var/data
+      - key: CONTENT_FLOW_COOKIE_SECURE
+        value: "true"
+      - key: CONTENT_FLOW_AI_PROVIDER
+        value: claude
+      # Browsers reach the API through the web service's /api proxy (same origin),
+      # so CORS is only a fallback; allow nothing but our own web service.
+      - key: CONTENT_FLOW_ALLOWED_ORIGINS
+        fromService:
+          type: web
+          name: contentflow-web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: CONTENT_FLOW_FRONTEND_URL
+        fromService:
+          type: web
+          name: contentflow-web
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: CONTENT_FLOW_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: CONTENT_FLOW_PUBLISHER_ENABLED
+        value: "false"
+      - key: CONTENT_FLOW_PUBLISHER_INTERVAL_SECONDS
+        value: "60"
+      - key: CONTENT_FLOW_PUBLISH_MAX_ATTEMPTS
+        value: "3"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: contentflow-web
+    runtime: node
+    rootDir: ContentFlow/frontend
+    region: oregon
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0
+    envVars:
+      # "/" makes the browser call this same site (same-origin /api/...), and
+      # Next.js proxies /api/* to the API over Render's private network, so the
+      # session cookie stays first-party.
+      - key: NEXT_PUBLIC_CONTENT_FLOW_API_URL
+        value: /
+      - key: CONTENT_FLOW_API_INTERNAL_URL
+        fromService:
+          type: web
+          name: contentflow-api
+          property: hostport

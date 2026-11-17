@@ -1,18 +1,26 @@
+import asyncio
+import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
+from urllib.parse import parse_qs, urlparse
 
-from app import main
+from media_samples import jpeg, png
+
+from app import ai as ai_service, config, database, main, meta_graph, security, social_oauth
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     data_dir = tmp_path / "data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
     with TestClient(main.app) as test_client:
         register_response = test_client.post(
             "/api/auth/register",
@@ -29,16 +37,16 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
 
 def test_protected_content_api_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data_dir = tmp_path / "unauthenticated-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as unauthenticated_client:
         response = unauthenticated_client.get("/api/submissions")
-        scheduled_posts = unauthenticated_client.get("/api/scheduled-posts")
+        posts = unauthenticated_client.get("/api/posts")
 
     assert response.status_code == 401
-    assert scheduled_posts.status_code == 401
+    assert posts.status_code == 401
 
 
 def test_registration_creates_workspace_and_http_only_session(
@@ -46,9 +54,9 @@ def test_registration_creates_workspace_and_http_only_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_dir = tmp_path / "registration-data"
-    monkeypatch.setattr(main, "DATA_DIR", data_dir)
-    monkeypatch.setattr(main, "UPLOAD_DIR", data_dir / "uploads")
-    monkeypatch.setattr(main, "DATABASE_PATH", data_dir / "test.sqlite3")
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
     with TestClient(main.app) as registration_client:
         registered = registration_client.post(
@@ -245,7 +253,7 @@ def test_user_cannot_read_another_users_submissions(client: TestClient) -> None:
 def test_user_cannot_attach_another_users_asset(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("private.png", b"private image", "image/png")},
+        files={"file": ("private.png", png(), "image/png")},
     )
     client.post("/api/auth/logout")
     client.post(
@@ -300,220 +308,472 @@ def test_create_and_list_submission(client: TestClient) -> None:
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == created.json()["id"]
 
+def test_caption_generation_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_dir = tmp_path / "caption-unauthenticated-data"
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
 
-def test_create_and_list_scheduled_posts(client: TestClient) -> None:
-    payload = {
-        "posts": [
-            {
-                "media_name": "Campaign image.png",
-                "date": "2026-11-03",
-                "time": "10:30",
-                "platforms": ["instagram", "linkedin"],
-                "caption": "A launch is coming soon.",
-            },
-            {
-                "media_name": "Behind the scenes.mp4",
-                "date": "2026-11-04",
-                "time": "11:00",
-                "platforms": ["facebook"],
-                "caption": "A little look behind the scenes.",
-            },
-        ]
-    }
+    with TestClient(main.app) as unauthenticated_client:
+        response = unauthenticated_client.post(
+            "/api/ai/captions",
+            json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
+        )
 
-    created = client.post("/api/scheduled-posts", json=payload)
-    listed = client.get("/api/scheduled-posts")
-
-    assert created.status_code == 201
-    assert len(created.json()) == 2
-    assert created.json()[0]["media_name"] == payload["posts"][0]["media_name"]
-    assert created.json()[0]["date"] == payload["posts"][0]["date"]
-    assert created.json()[0]["time"] == payload["posts"][0]["time"]
-    assert created.json()[0]["platforms"] == payload["posts"][0]["platforms"]
-    assert listed.status_code == 200
-    assert [post["id"] for post in listed.json()] == [
-        post["id"] for post in created.json()
-    ]
+    assert response.status_code == 401
 
 
-def test_scheduled_posts_reject_channel_time_conflicts_atomically(client: TestClient) -> None:
-    first = client.post(
-        "/api/scheduled-posts",
+def test_social_provider_list_requires_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_dir = tmp_path / "social-unauthenticated-data"
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(config, "UPLOAD_DIR", data_dir / "uploads")
+    monkeypatch.setattr(config, "DATABASE_PATH", data_dir / "test.sqlite3")
+
+    with TestClient(main.app) as unauthenticated_client:
+        response = unauthenticated_client.get("/api/social/providers")
+        start = unauthenticated_client.get("/api/social/oauth/meta/start", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert start.status_code == 401
+
+
+def test_meta_oauth_start_requires_app_credentials(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("META_APP_ID", raising=False)
+    monkeypatch.delenv("META_APP_SECRET", raising=False)
+    response = client.get("/api/social/oauth/meta/start")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Configure META_APP_ID and META_APP_SECRET on the backend."
+
+
+def test_meta_oauth_start_requires_https_callback_url(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "http://127.0.0.1:8000")
+
+    insecure = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+    secure = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+
+    assert insecure.status_code == 503
+    assert "requires an HTTPS API callback" in insecure.json()["detail"]
+    assert secure.status_code == 302
+    assert "redirect_uri=https%3A%2F%2Fcontentflow-api.example.com" in secure.headers["location"]
+    authorization_params = parse_qs(urlparse(secure.headers["location"]).query)
+    assert authorization_params["auth_type"] == ["rerequest"]
+    # Exactly the permissions the product uses (publishing and analytics); any change
+    # here affects Meta App Review and should be deliberate.
+    assert sorted(authorization_params["scope"][0].split(",")) == sorted([
+        "pages_show_list", "business_management", "pages_read_engagement",
+        "pages_manage_posts", "instagram_basic", "instagram_content_publish", "instagram_manage_insights",
+    ])
+
+
+def test_meta_extra_scopes_are_appended_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import social_oauth
+
+    monkeypatch.setenv("META_EXTRA_SCOPES", " read_insights, pages_manage_posts ,")
+    scopes = social_oauth.meta_scopes().split(",")
+    assert scopes[-1] == "read_insights"
+    assert scopes.count("pages_manage_posts") == 1
+    monkeypatch.delenv("META_EXTRA_SCOPES")
+    assert "read_insights" not in social_oauth.meta_scopes()
+
+
+def test_backend_environment_loads_env_file_without_overriding_process_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "META_APP_ID=file-app-id\nMETA_APP_SECRET=file-app-secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("META_APP_ID", "process-app-id")
+    monkeypatch.delenv("META_APP_SECRET", raising=False)
+
+    config.load_backend_environment(env_file)
+
+    assert os.environ["META_APP_ID"] == "process-app-id"
+    assert os.environ["META_APP_SECRET"] == "file-app-secret"
+
+
+def test_meta_provider_status_requires_app_credentials_and_encryption_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.delenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", raising=False)
+
+    without_encryption = client.get("/api/social/providers")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    configured = client.get("/api/social/providers")
+
+    assert without_encryption.status_code == 200
+    assert [p["provider"] for p in without_encryption.json()] == ["meta", "tiktok", "linkedin"]
+    assert without_encryption.json()[0]["provider"] == "meta"
+    assert without_encryption.json()[0]["configured"] is False
+    assert configured.json()[0]["configured"] is True
+    assert client.get("/api/social/oauth/tiktok/start").status_code == 503  # supported, not configured
+    unsupported = client.get("/api/social/oauth/myspace/start")
+    assert unsupported.status_code == 404
+
+
+def test_meta_oauth_lets_the_user_choose_accounts_and_stores_tokens_encrypted(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encryption_key = Fernet.generate_key()
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "test-meta-secret")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", encryption_key.decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+    monkeypatch.setenv("CONTENT_FLOW_FRONTEND_URL", "https://contentflow-web.example.com")
+
+    async def fake_exchange(provider: str, settings: dict[str, str], code: str, redirect_uri: str) -> dict[str, object]:
+        assert provider == "meta"
+        assert code == "meta-auth-code"
+        assert redirect_uri == "https://contentflow-api.example.com/api/social/oauth/meta/callback"
+        return {"access_token": "user-access-token", "expires_at": "2026-10-15T00:00:00+00:00"}
+
+    page_tokens = {"access_token": "page-access-token", "refresh_token": None, "expires_at": None}
+
+    async def fake_accounts(provider: str, token_data: dict[str, object]) -> dict[str, object]:
+        return {"external_user_id": "meta-user-1", "external_user_name": "Mo", "accounts": [
+            {"platform": "facebook", "account_id": "page-42", "account_name": "ContentFlow Page", "account_type": "page",
+             "profile_picture_url": "https://cdn.example.com/p.jpg", "parent_account_id": None,
+             "details": {"can_publish": True}, "tokens": page_tokens},
+            {"platform": "facebook", "account_id": "page-99", "account_name": "Other Page", "account_type": "page",
+             "parent_account_id": None, "details": {"can_publish": True}, "tokens": page_tokens},
+            {"platform": "instagram", "account_id": "instagram-77", "account_name": "contentflow.official",
+             "account_type": "professional", "parent_account_id": "page-42",
+             "details": {"followers_count": 1200, "can_publish": True, "linked_page_name": "ContentFlow Page"},
+             "tokens": page_tokens},
+        ]}
+
+    monkeypatch.setattr(social_oauth, "exchange_authorization_code", fake_exchange)
+    monkeypatch.setattr(social_oauth, "retrieve_connected_accounts", fake_accounts)
+
+    start = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+    callback = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "meta-auth-code"},
+        follow_redirects=False,
+    )
+    assert start.status_code == 302
+    assert callback.status_code == 303
+    location = urlparse(callback.headers["location"])
+    assert location.path == "/accounts" and parse_qs(location.query)["social"] == ["select"]
+    connection_id = parse_qs(location.query)["connection"][0]
+
+    # Nothing is saved until the user chooses.
+    meta = next(provider for provider in client.get("/api/social/providers").json() if provider["provider"] == "meta")
+    assert meta["accounts"] == []
+    pending = client.get(f"/api/social/connections/{connection_id}").json()
+    assert pending["signed_in_as"] == "Mo"
+    assert [c["key"] for c in pending["candidates"]] == ["facebook:page-42", "facebook:page-99", "instagram:instagram-77"]
+    assert "page-access-token" not in json.dumps(pending)
+
+    selected = client.post(f"/api/social/connections/{connection_id}/select",
+                           json={"keys": ["instagram:instagram-77", "facebook:page-42"]})
+    assert selected.status_code == 200
+    by_platform = {a["platform"]: a for a in selected.json()}
+    assert set(by_platform) == {"facebook", "instagram"}  # page-99 was not chosen
+    assert by_platform["instagram"]["parent_account_id"] == by_platform["facebook"]["id"]
+    assert by_platform["instagram"]["followers_count"] == 1200
+    assert by_platform["facebook"]["status"] == "active"
+    assert all("access_token" not in account for account in selected.json())
+    # The pending sign-in is single use.
+    assert client.get(f"/api/social/connections/{connection_id}").status_code == 404
+
+    with database.connect_database() as connection:
+        stored = connection.execute("SELECT encrypted_tokens, external_user_id FROM social_accounts").fetchall()
+    assert all(json.loads(Fernet(encryption_key).decrypt(r["encrypted_tokens"].encode()))["access_token"]
+               == "page-access-token" for r in stored)
+    assert {r["external_user_id"] for r in stored} == {"meta-user-1"}
+
+    replay = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "meta-auth-code"},
+        follow_redirects=False,
+    )
+    assert replay.headers["location"].endswith("/accounts?social=invalid_state")
+
+    with TestClient(main.app) as another_workspace:
+        another_workspace.post("/api/auth/register", json={
+            "full_name": "Different User", "workspace_name": "Different Workspace",
+            "email": "different@example.com", "password": "another-safe-password",
+        })
+        assert another_workspace.delete(f"/api/social/accounts/{by_platform['instagram']['id']}").status_code == 404
+        assert another_workspace.get(f"/api/social/connections/{connection_id}").status_code == 404
+
+    assert client.delete(f"/api/social/accounts/{by_platform['facebook']['id']}").status_code == 204
+    remaining = client.get("/api/social/providers").json()[0]["accounts"]
+    assert [account["platform"] for account in remaining] == ["instagram"]
+    assert remaining[0]["parent_account_id"] is None
+
+
+def test_meta_exchange_and_discovery_follow_pagination_and_page_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = {"client_id_value": "test-meta-app", "client_secret_value": "test-meta-secret"}
+    seen_pages: list[str] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        path = request.url.path
+        assert path.startswith("/v26.0/")
+        if params.get("code") == "meta-auth-code":
+            return httpx.Response(200, json={"access_token": "short-user-token", "expires_in": 3600})
+        if params.get("grant_type") == "fb_exchange_token":
+            assert params["fb_exchange_token"] == "short-user-token"
+            return httpx.Response(200, json={"access_token": "long-user-token", "expires_in": 5184000})
+        if path.endswith("/me"):
+            return httpx.Response(200, json={"id": "meta-user-1", "name": "Mo"})
+        if path.endswith("/me/accounts"):
+            assert params["access_token"] == "long-user-token"
+            if "after" not in params:
+                return httpx.Response(200, json={
+                    "data": [{"id": "page-42", "name": "First Page", "access_token": "page-42-token",
+                              "tasks": ["CREATE_CONTENT", "ANALYZE"], "category": "Restaurant"}],
+                    "paging": {"cursors": {"after": "cursor-1"}, "next": "https://graph.facebook.com/next"},
+                })
+            assert params["after"] == "cursor-1"
+            return httpx.Response(200, json={"data": [
+                {"id": "page-43", "name": "Read-only Page", "access_token": "page-43-token", "tasks": ["ANALYZE"]},
+                {"id": "page-44", "name": "No token Page"},
+            ]})
+        page_id = path.rsplit("/", 1)[-1]
+        seen_pages.append(page_id)
+        assert params["access_token"] == f"{page_id}-token"
+        if page_id == "page-42":
+            return httpx.Response(200, json={"instagram_business_account": {
+                "id": "instagram-77", "username": "contentflow.official", "followers_count": 1200}})
+        return httpx.Response(200, json={"id": page_id})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    for module in (social_oauth.httpx, meta_graph.httpx):
+        monkeypatch.setattr(module, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+
+    async def connect_and_discover():  # type: ignore[no-untyped-def]
+        token_data = await social_oauth.exchange_authorization_code(
+            "meta", settings, "meta-auth-code", "https://contentflow.example.com/callback",
+        )
+        return token_data, await social_oauth.retrieve_connected_accounts("meta", token_data)
+
+    token_data, discovered = asyncio.run(connect_and_discover())
+
+    assert token_data["access_token"] == "long-user-token"
+    assert discovered["external_user_id"] == "meta-user-1"
+    accounts = {(a["platform"], a["account_id"]): a for a in discovered["accounts"]}
+    assert sorted(accounts) == [("facebook", "page-42"), ("facebook", "page-43"), ("instagram", "instagram-77")]
+    assert seen_pages == ["page-42", "page-43"]  # the Page without a token was skipped
+    assert accounts[("facebook", "page-42")]["details"]["can_publish"] is True
+    assert accounts[("facebook", "page-43")]["details"]["can_publish"] is False
+    instagram = accounts[("instagram", "instagram-77")]
+    assert instagram["parent_account_id"] == "page-42"
+    assert instagram["details"]["followers_count"] == 1200
+    assert instagram["tokens"]["access_token"] == "page-42-token"
+
+
+def test_caption_generation_requires_provider_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = client.post(
+        "/api/ai/captions",
+        json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Configure OPENAI_API_KEY on the backend to generate captions."
+
+
+def test_caption_generation_returns_one_draft_per_platform(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+        assert provider == "openai"
+        assert api_key == "test-key"
+        assert model == "gpt-5-mini"
+        assert "distinct post for each requested platform" in prompt
+        return (
+            '{"posts":['
+            '{"platform":"instagram","caption":"A visual launch.","hashtags":["CourseLaunch"]},'
+            '{"platform":"linkedin","caption":"A professional launch.","hashtags":["Education"]}'
+            ']}'
+        )
+
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
+    response = client.post(
+        "/api/ai/captions",
         json={
-            "posts": [
-                {
-                    "media_name": "First post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "First.",
-                }
-            ]
+            "topic": "A new course",
+            "audience": "Students",
+            "instructions": "Do not invent dates.",
+            "platforms": ["instagram", "linkedin"],
         },
     )
-    conflict = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Would be rolled back.png",
-                    "date": "2026-11-04",
-                    "time": "09:00",
-                    "platforms": ["facebook"],
-                    "caption": "This must not partially save.",
-                },
-                {
-                    "media_name": "Conflicting post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram", "linkedin"],
-                    "caption": "This conflicts with the first post.",
-                },
-            ]
-        },
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openai"
+    assert [post["platform"] for post in response.json()["posts"]] == ["instagram", "linkedin"]
+    assert response.json()["posts"][0]["caption"] != response.json()["posts"][1]["caption"]
+
+
+def test_claude_caption_generation_uses_configured_model_and_key(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+        assert provider == "claude"
+        assert api_key == "test-anthropic-key"
+        assert model == "claude-sonnet-5-5"
+        assert "instagram" in prompt
+        return '{"posts":[{"platform":"instagram","caption":"A fresh start.","hashtags":["NewCourse"]}]}'
+
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
+    response = client.post(
+        "/api/ai/captions",
+        json={"topic": "A new course", "audience": "Students", "platforms": ["instagram"]},
     )
 
-    assert first.status_code == 201
-    assert conflict.status_code == 409
-    assert len(client.get("/api/scheduled-posts").json()) == 1
+    assert response.status_code == 200
+    assert response.json()["provider"] == "claude"
+    assert response.json()["posts"][0]["caption"] == "A fresh start."
 
 
-def test_scheduled_post_date_update_and_delete(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Campaign image.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "A launch is coming soon.",
-                }
-            ]
-        },
-    )
-    post_id = created.json()[0]["id"]
-    rescheduled = client.patch(
-        f"/api/scheduled-posts/{post_id}",
-        json={"date": "2026-11-05"},
-    )
-    deleted = client.delete(f"/api/scheduled-posts/{post_id}")
+def test_claude_provider_sends_anthropic_messages_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.anthropic.com/v1/messages"
+        assert request.headers["x-api-key"] == "test-anthropic-key"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        body = json.loads(request.content)
+        assert body["model"] == "claude-sonnet-5-5"
+        assert body["system"] == "Write platform-specific captions."
+        assert body["max_tokens"] > 0
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": '{"posts":[]}'}]},
+        )
 
-    assert rescheduled.status_code == 200
-    assert rescheduled.json()["date"] == "2026-11-05"
-    assert deleted.status_code == 204
-    assert client.get("/api/scheduled-posts").json() == []
-
-
-def test_reschedule_rejects_a_channel_time_collision(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "First post.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "First.",
-                },
-                {
-                    "media_name": "Second post.png",
-                    "date": "2026-11-04",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "Second.",
-                },
-            ]
-        },
-    )
-    first_id = created.json()[0]["id"]
-    conflict = client.patch(
-        f"/api/scheduled-posts/{first_id}",
-        json={"date": "2026-11-04"},
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(
+        ai_service.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
 
-    assert created.status_code == 201
-    assert conflict.status_code == 409
-    assert client.get("/api/scheduled-posts").json()[0]["date"] == "2026-11-03"
-
-
-def test_scheduled_posts_are_private_to_each_user(client: TestClient) -> None:
-    created = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    "media_name": "Private plan.png",
-                    "date": "2026-11-03",
-                    "time": "10:30",
-                    "platforms": ["instagram"],
-                    "caption": "Private schedule.",
-                }
-            ]
-        },
-    )
-    post_id = created.json()[0]["id"]
-    client.post("/api/auth/logout")
-    client.post(
-        "/api/auth/register",
-        json={
-            "full_name": "Other User",
-            "workspace_name": "Other Workspace",
-            "email": "other@example.com",
-            "password": "another-strong-password",
-        },
+    response_text = asyncio.run(
+        ai_service.call_caption_provider(
+            "claude",
+            "test-anthropic-key",
+            "claude-sonnet-5-5",
+            "Write platform-specific captions.",
+        )
     )
 
-    assert client.get("/api/scheduled-posts").json() == []
-    assert client.patch(f"/api/scheduled-posts/{post_id}", json={"date": "2026-11-06"}).status_code == 404
-    assert client.delete(f"/api/scheduled-posts/{post_id}").status_code == 404
+    assert response_text == '{"posts":[]}'
 
 
-def test_scheduled_posts_validate_payload_and_idempotent_retry(client: TestClient) -> None:
-    payload = {
-        "posts": [
-            {
-                "media_name": "Campaign image.png",
-                "date": "2026-11-03",
-                "time": "10:30",
-                "platforms": ["instagram"],
-                "caption": "A launch is coming soon.",
-            }
-        ]
-    }
-    created = client.post("/api/scheduled-posts", json=payload)
-    retry = client.post("/api/scheduled-posts", json=payload)
-    invalid = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    **payload["posts"][0],
-                    "platforms": ["not-a-platform"],
-                }
-            ]
-        },
-    )
-    invalid_precision = client.post(
-        "/api/scheduled-posts",
-        json={
-            "posts": [
-                {
-                    **payload["posts"][0],
-                    "time": "10:30:01",
-                }
-            ]
-        },
-    )
+def test_gemini_provider_request_and_free_tier_errors(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    status = {"code": 200}
 
-    assert created.status_code == 201
-    assert retry.status_code == 201
-    assert retry.json()[0]["id"] == created.json()[0]["id"]
-    assert invalid.status_code == 422
-    assert invalid_precision.status_code == 422
-    assert len(client.get("/api/scheduled-posts").json()) == 1
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert str(request.url).startswith("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-")
+        assert request.headers["x-goog-api-key"] == "test-gemini-key"
+        body = json.loads(request.content)
+        assert body["generationConfig"]["responseMimeType"] == "application/json"
+        if status["code"] != 200:
+            return httpx.Response(status["code"], json={"error": {"message": "nope"}})
+        text = '{"posts":[{"platform":"facebook","caption":"Fresh bread today.","hashtags":["Bakery"]}]}'
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    payload = {"topic": "Fresh bread", "audience": "Neighbours", "platforms": ["facebook"]}
+
+    ok = client.post("/api/ai/captions", json=payload)
+    assert ok.status_code == 200
+    assert ok.json()["provider"] == "gemini"
+    assert ok.json()["posts"][0]["caption"] == "Fresh bread today."
+
+    status["code"] = 429
+    limited = client.post("/api/ai/captions", json=payload)
+    assert limited.status_code == 503
+    assert "usage limit" in limited.json()["detail"]
+
+    status["code"] = 403
+    bad_key = client.post("/api/ai/captions", json=payload)
+    assert bad_key.status_code == 503
+    assert "API key" in bad_key.json()["detail"]
+
+    status["code"] = 503
+    busy = client.post("/api/ai/captions", json=payload)
+    assert busy.status_code == 503
+    assert "busy" in busy.json()["detail"]
+
+
+def test_gemini_falls_back_to_lighter_model_when_busy_or_retired(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("GEMINI_MODEL", "")
+    calls: list[str] = []
+    failure = {"code": 503}
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        model = str(request.url).split("/models/")[1].split(":")[0]
+        calls.append(model)
+        if model != "gemini-flash-lite-latest":
+            return httpx.Response(failure["code"], json={"error": {"message": "high demand"}})
+        text = '{"posts":[{"platform":"facebook","caption":"Fresh bread today.","hashtags":["Bakery"]}]}'
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    payload = {"topic": "Fresh bread", "audience": "Neighbours", "platforms": ["facebook"]}
+
+    assert client.post("/api/ai/captions", json=payload).status_code == 200
+    assert calls == ["gemini-flash-latest", "gemini-flash-lite-latest"]
+
+    calls.clear()
+    failure["code"] = 404  # an old pinned model retired for new keys
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    assert client.post("/api/ai/captions", json=payload).status_code == 200
+    assert calls == ["gemini-2.5-flash", "gemini-flash-lite-latest"]
+
+    calls.clear()
+    failure["code"] = 429  # a quota error is not retried on another model
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-flash-latest")
+    assert client.post("/api/ai/captions", json=payload).status_code == 503
+    assert calls == ["gemini-flash-latest"]
 
 
 def test_reject_invalid_platform_and_duplicate_platforms(client: TestClient) -> None:
@@ -552,7 +812,7 @@ def test_required_submission_text_cannot_be_blank(client: TestClient) -> None:
 def test_upload_asset_and_attach_it_to_submission(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("poster.png", b"image bytes", "image/png")},
+        files={"file": ("poster.png", jpeg(), "image/png")},
     )
     assert uploaded.status_code == 201
     asset = uploaded.json()
@@ -582,7 +842,7 @@ def test_upload_asset_and_attach_it_to_submission(client: TestClient) -> None:
 def test_asset_cannot_be_attached_to_multiple_submissions(client: TestClient) -> None:
     uploaded = client.post(
         "/api/assets",
-        files={"file": ("poster.png", b"image bytes", "image/png")},
+        files={"file": ("poster.png", jpeg(), "image/png")},
     )
     asset_id = uploaded.json()["id"]
     payload = {
@@ -629,3 +889,269 @@ def test_submission_requires_existing_asset(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
+
+
+def _signed_webhook(client: TestClient, body: bytes, secret: str, signature: str = "") -> httpx.Response:
+    import hashlib
+    import hmac
+
+    header = signature or "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return client.post(
+        "/api/social/webhook",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": header},
+    )
+
+
+def test_webhook_is_closed_until_a_verify_token_is_configured(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("META_WEBHOOK_VERIFY_TOKEN", raising=False)
+    verify = client.get(
+        "/api/social/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "insta_hook_99", "hub.challenge": "42"},
+    )
+    receive = client.post("/api/social/webhook", json={"object": "page"})
+
+    assert verify.status_code == 503
+    assert receive.status_code == 503
+
+
+def test_webhook_verification_uses_configured_token(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_WEBHOOK_VERIFY_TOKEN", "configured-verify-token")
+    params = {"hub.mode": "subscribe", "hub.challenge": "challenge-123"}
+
+    accepted = client.get("/api/social/webhook", params={**params, "hub.verify_token": "configured-verify-token"})
+    rejected = client.get("/api/social/webhook", params={**params, "hub.verify_token": "insta_hook_99"})
+
+    assert accepted.status_code == 200
+    assert accepted.text == "challenge-123"
+    assert rejected.status_code == 403
+
+
+def test_webhook_events_require_a_valid_meta_signature(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("META_WEBHOOK_VERIFY_TOKEN", "configured-verify-token")
+    monkeypatch.setenv("META_APP_SECRET", "test-app-secret")
+    body = b'{"object":"page","entry":[{"id":"1"}]}'
+
+    valid = _signed_webhook(client, body, "test-app-secret")
+    wrong_secret = _signed_webhook(client, body, "another-secret")
+    missing = client.post("/api/social/webhook", content=body, headers={"Content-Type": "application/json"})
+    tampered = _signed_webhook(
+        client,
+        b'{"object":"page","entry":[]}',
+        "test-app-secret",
+        signature=valid.request.headers["X-Hub-Signature-256"],
+    )
+
+    assert valid.status_code == 200
+    assert wrong_secret.status_code == 401
+    assert missing.status_code == 401
+    assert tampered.status_code == 401
+
+
+def test_repeated_failed_logins_lock_the_email_temporarily(client: TestClient) -> None:
+    client.post("/api/auth/logout")
+    for _ in range(5):
+        failed = client.post("/api/auth/login", json={"email": "test@example.com", "password": "wrong-password"})
+        assert failed.status_code == 401
+
+    locked = client.post("/api/auth/login", json={"email": "test@example.com", "password": "correct-horse-battery"})
+
+    assert locked.status_code == 429
+    assert int(locked.headers["Retry-After"]) > 0
+    other_account = client.post("/api/auth/login", json={"email": "other@example.com", "password": "anything"})
+    assert other_account.status_code == 401
+
+
+def test_registration_is_rate_limited_per_network(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_REGISTER_PER_HOUR_LIMIT", "2")
+    account = {"full_name": "New Person", "workspace_name": "New Workspace", "password": "correct-horse-battery"}
+
+    second = client.post("/api/auth/register", json={**account, "email": "second@example.com"})
+    third = client.post("/api/auth/register", json={**account, "email": "third@example.com"})
+
+    assert second.status_code == 201
+    assert third.status_code == 429
+
+
+def test_ai_caption_daily_quota_counts_every_provider_call(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "2")
+    calls: list[str] = []
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+        calls.append(provider)
+        if len(calls) == 1:
+            raise httpx.ConnectError("provider unavailable")
+        return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
+
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
+    request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
+
+    failed = client.post("/api/ai/captions", json=request)
+    succeeded = client.post("/api/ai/captions", json=request)
+    over_quota = client.post("/api/ai/captions", json=request)
+    usage = client.get("/api/ai/usage")
+
+    assert failed.status_code == 502
+    assert succeeded.status_code == 200
+    assert over_quota.status_code == 429
+    assert len(calls) == 2
+    assert usage.json() == {"used_last_24h": 2, "daily_limit": 2, "remaining": 0}
+
+
+def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "1")
+
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+        return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
+
+    monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
+    request = {"topic": "A new course", "audience": "Students", "platforms": ["instagram"]}
+    assert client.post("/api/ai/captions", json=request).status_code == 200
+    assert client.post("/api/ai/captions", json=request).status_code == 429
+
+    client.post(
+        "/api/auth/register",
+        json={
+            "full_name": "Second User",
+            "workspace_name": "Second Workspace",
+            "email": "second@example.com",
+            "password": "correct-horse-battery",
+        },
+    )
+    assert client.post("/api/ai/captions", json=request).status_code == 200
+
+
+def test_client_ip_uses_render_proxy_address_only_on_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    from starlette.requests import Request as StarletteRequest
+
+    request = StarletteRequest({
+        "type": "http",
+        "headers": [(b"x-forwarded-for", b"1.1.1.1, 203.0.113.9")],
+        "client": ("10.0.0.5", 1234),
+    })
+
+    monkeypatch.delenv("RENDER", raising=False)
+    assert security.client_ip(request) == "10.0.0.5"
+    monkeypatch.setenv("RENDER", "true")
+    assert security.client_ip(request) == "203.0.113.9"
+
+
+def test_client_ip_behind_two_trusted_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Vercel rewrite -> Koyeb: [spoofed..., client, vercel-egress]."""
+    from starlette.requests import Request as StarletteRequest
+
+    def request(xff: str) -> StarletteRequest:
+        return StarletteRequest({"type": "http", "headers": [(b"x-forwarded-for", xff.encode())], "client": ("10.0.0.5", 1)})
+
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setenv("CONTENT_FLOW_TRUSTED_PROXY_HOPS", "2")
+    assert security.client_ip(request("9.9.9.9, 198.51.100.7, 76.76.21.1")) == "198.51.100.7"
+    assert security.client_ip(request("198.51.100.7, 76.76.21.1")) == "198.51.100.7"
+    assert security.client_ip(request("76.76.21.1")) == "76.76.21.1"
+    monkeypatch.setenv("CONTENT_FLOW_TRUSTED_PROXY_HOPS", "0")
+    monkeypatch.setenv("RENDER", "true")
+    assert security.client_ip(request("198.51.100.7, 76.76.21.1")) == "10.0.0.5"
+
+
+@pytest.fixture()
+def app_logs(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
+    import logging
+
+    app_logger = logging.getLogger("app")
+    app_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.INFO, logger="app")
+    try:
+        yield caplog
+    finally:
+        app_logger.removeHandler(caplog.handler)
+
+
+def test_oauth_failures_are_logged_without_secrets(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("META_APP_ID", "test-meta-app")
+    monkeypatch.setenv("META_APP_SECRET", "super-secret-app-value")
+    monkeypatch.setenv("CONTENT_FLOW_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("CONTENT_FLOW_API_PUBLIC_URL", "https://contentflow-api.example.com")
+
+    async def failing_exchange(provider: str, settings: dict[str, str], code: str, redirect_uri: str) -> dict[str, object]:
+        request = httpx.Request(
+            "GET",
+            "https://graph.facebook.com/v25.0/oauth/access_token",
+            params={"client_secret": "super-secret-app-value", "code": "private-auth-code"},
+        )
+        response = httpx.Response(
+            400,
+            request=request,
+            json={"error": {"message": "Invalid verification code format.", "type": "OAuthException", "code": 100}},
+        )
+        response.raise_for_status()
+        return {}
+
+    monkeypatch.setattr(social_oauth, "exchange_authorization_code", failing_exchange)
+    start = client.get("/api/social/oauth/meta/start", follow_redirects=False)
+    state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+
+    callback = client.get(
+        "/api/social/oauth/meta/callback",
+        params={"state": state, "code": "private-auth-code"},
+        follow_redirects=False,
+    )
+
+    assert callback.headers["location"].endswith("/accounts?social=connect_failed")
+    assert "Invalid verification code format." in app_logs.text
+    assert "super-secret-app-value" not in app_logs.text
+    assert "private-auth-code" not in app_logs.text
+
+
+def test_responses_carry_a_request_id(client: TestClient) -> None:
+    generated = client.get("/api/health")
+    forwarded = client.get("/api/health", headers={"X-Request-ID": "trace-abc.123"})
+    unsafe = client.get("/api/health", headers={"X-Request-ID": "bad id\nwith newline"})
+
+    assert len(generated.headers["X-Request-ID"]) == 32
+    assert forwarded.headers["X-Request-ID"] == "trace-abc.123"
+    assert unsafe.headers["X-Request-ID"] != "bad id\nwith newline"
+
+
+def test_unhandled_errors_return_json_with_request_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    app_logs: pytest.LogCaptureFixture,
+) -> None:
+    from app.routers import submissions
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("database exploded")
+
+    monkeypatch.setattr(submissions, "connect_database", explode)
+    with TestClient(main.app, raise_server_exceptions=False) as raw_client:
+        raw_client.cookies.update(client.cookies)
+        response = raw_client.get(
+            "/api/submissions",
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["request_id"] == response.headers["X-Request-ID"]
+    assert "database exploded" not in response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "database exploded" in app_logs.text
