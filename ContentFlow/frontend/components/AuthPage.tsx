@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import Logo from "./Logo";
+import { apiUrl } from "../lib/api";
 
 type Props = { mode: "login" | "signup" | "forgot-password" | "reset-password" };
 
@@ -14,7 +15,6 @@ const content = {
   "reset-password": { eyebrow: "ONE LAST LITTLE STEP", title: "Pick a new password.", detail: "Choose something new and secure for your account." },
 };
 
-const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 async function getErrorMessage(response: Response) {
   try {

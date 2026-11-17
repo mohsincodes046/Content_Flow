@@ -10,7 +10,7 @@ import AccountsSection from "./AccountsSection";
 import AnalyticsView from "./AnalyticsView";
 import TeamSection from "./TeamSection";
 import WorkspaceSwitcher, { NoWorkspace } from "./WorkspaceSwitcher";
-import { api, assetUrl, browserTimezone, canEditContent, isSessionUser, uploadAsset, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
+import { api, apiUrl, assetUrl, browserTimezone, canEditContent, isSessionUser, uploadAsset, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
 import ComposePost from "./ComposePost";
 import PostsList from "./PostsList";
 import ReviewQueue from "./ReviewQueue";
@@ -34,7 +34,6 @@ type ConnectedSocialAccount = { id: string; account_id: string; platform: string
 type SocialProviderStatus = { provider: string; configured: boolean; accounts: ConnectedSocialAccount[]; publisher_enabled: boolean };
 type DashboardUser = SessionUser;
 
-const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
 const accounts: SocialAccount[] = [
   { id: "instagram", label: "Instagram", color: "#e76072", icon: "◎" },

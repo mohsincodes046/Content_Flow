@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
-import { uploadAsset } from "../lib/api";
+import { apiUrl, uploadAsset } from "../lib/api";
 
 type Platform = "instagram" | "facebook" | "linkedin" | "youtube" | "tiktok";
 type UploadedAsset = {
@@ -24,7 +24,6 @@ type Submission = {
   created_at: string;
 };
 
-const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 const platforms: Array<{ id: Platform; name: string; icon: string; color: string }> = [
   { id: "instagram", name: "Instagram", icon: "◎", color: "#d95776" },
   { id: "facebook", name: "Facebook", icon: "f", color: "#4d76e9" },

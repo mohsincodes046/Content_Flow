@@ -1,6 +1,11 @@
-// Shared API helpers. In production the browser calls the same site (`/`), and
-// Next.js proxies /api/* to the backend; locally it calls the API directly.
-export const apiUrl = (process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+// Shared API helpers: the single place the API base URL is decided.
+// On Vercel the browser calls the same site ("/") and next.config.ts proxies /api/*
+// to the live backend, which keeps the session cookie first-party (the API's cookie is
+// SameSite=Lax, so a direct cross-site call would not carry it). Locally it calls the
+// API directly. NEXT_PUBLIC_CONTENT_FLOW_API_URL overrides both.
+export const apiUrl = (
+  process.env.NEXT_PUBLIC_CONTENT_FLOW_API_URL || process.env.CONTENT_FLOW_DEFAULT_API_URL || "http://localhost:8000"
+).replace(/\/$/, "");
 
 export type Role = "owner" | "admin" | "editor" | "client";
 export type WorkspaceSummary = { id: string; name: string; role: Role };
