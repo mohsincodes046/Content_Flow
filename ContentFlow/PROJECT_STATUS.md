@@ -1,6 +1,6 @@
 # Project status
 
-Last updated: 2026-11-16 · Branch: `Mohsin`
+Last updated: 2026-11-17 · Branch: `Mohsin`
 
 ## Legend
 ✅ done and tested · 🟡 in progress · ⏳ not started · 🔒 blocked on an external requirement
@@ -10,7 +10,9 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 | Area | Status | Notes |
 |---|---|---|
 | Registration, login, sessions, password change | ✅ | Rate limited |
-| Deployment proxy and Render Blueprint | ✅ | Not deployed; Render deploy branch unconfirmed |
+| Free-stack deployment (Koyeb + Neon + Cloudinary + Vercel) | 🟡 | Code + `backend/Dockerfile` + `docs/DEPLOY_FREE_STACK.md` ready; not deployed (owner approval) |
+| AI captions (Gemini free) | ✅ | Verified live 17 Nov 2026; falls back to a lighter model when Gemini is busy |
+| Cloudinary media storage | ✅ code / 🟡 live | Needs a real `CLOUDINARY_URL` (key + secret) to test live |
 | SQLite → PostgreSQL support and migration tooling | ✅ | Paid database not provisioned (awaiting approval) |
 | Workspaces, roles, client management | ✅ | Invitations by shareable link (email delivery not configured) |
 | Meta connection: Pages, Instagram, reconnect | ✅ | Live sign-in needs your Meta app + test Page (manual test) |
@@ -32,6 +34,11 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
   - Scheduled post (16:25 Asia/Karachi) published automatically by the background worker
     to Facebook (`…_122218749560770785`) and Instagram (`18422173327159664`), one attempt
     each; confirmed on Meta (`is_published`, permalink, caption, image).
+  - Carousel / multi-photo (2 images) scheduled 23:21 Asia/Karachi: Facebook
+    `…_122218783100770785`, Instagram carousel `18067017377639403`
+    (instagram.com/p/Df2kA9pgc4p). Video scheduled 23:23: Facebook video
+    `1476910607871615`, Instagram Reel `17955229992302760` (instagram.com/reel/Df2kcfLG6AG).
+    All published by the background worker on the first attempt.
   - Analytics: Instagram account + post insights return real values. Facebook Page/post
     insights return empty data (Page has no followers yet and the token lacks
     `read_insights`) and show "Unavailable".

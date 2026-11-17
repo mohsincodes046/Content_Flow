@@ -41,15 +41,19 @@ RATE_LIMIT_RETENTION = timedelta(days=2)
 def client_ip(request: Request) -> str:
     """Best-effort client address.
 
-    On Render, requests arrive through Render's proxy, which appends the real
-    client address as the last X-Forwarded-For entry; earlier entries are
-    client-controlled and must not be trusted.
+    Each trusted proxy in front of the API appends the address it received the
+    request from to X-Forwarded-For, so with N trusted proxies the client is the
+    N-th entry from the right; entries further left are client-controlled.
+    CONTENT_FLOW_TRUSTED_PROXY_HOPS sets N (Render: 1; Vercel rewrite -> Koyeb: 2).
+    Defaults to 1 on Render, otherwise 0 (use the TCP peer address).
     """
-    if os.environ.get("RENDER"):
+    raw = os.environ.get("CONTENT_FLOW_TRUSTED_PROXY_HOPS", "").strip()
+    hops = int(raw) if raw.isdigit() else (1 if os.environ.get("RENDER") else 0)
+    if hops:
         forwarded = request.headers.get("x-forwarded-for", "")
         candidates = [part.strip() for part in forwarded.split(",") if part.strip()]
         if candidates:
-            return candidates[-1]
+            return candidates[-hops] if len(candidates) >= hops else candidates[0]
     return request.client.host if request.client else "unknown"
 
 

@@ -1052,6 +1052,23 @@ def test_client_ip_uses_render_proxy_address_only_on_render(monkeypatch: pytest.
     assert security.client_ip(request) == "203.0.113.9"
 
 
+def test_client_ip_behind_two_trusted_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Vercel rewrite -> Koyeb: [spoofed..., client, vercel-egress]."""
+    from starlette.requests import Request as StarletteRequest
+
+    def request(xff: str) -> StarletteRequest:
+        return StarletteRequest({"type": "http", "headers": [(b"x-forwarded-for", xff.encode())], "client": ("10.0.0.5", 1)})
+
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setenv("CONTENT_FLOW_TRUSTED_PROXY_HOPS", "2")
+    assert security.client_ip(request("9.9.9.9, 198.51.100.7, 76.76.21.1")) == "198.51.100.7"
+    assert security.client_ip(request("198.51.100.7, 76.76.21.1")) == "198.51.100.7"
+    assert security.client_ip(request("76.76.21.1")) == "76.76.21.1"
+    monkeypatch.setenv("CONTENT_FLOW_TRUSTED_PROXY_HOPS", "0")
+    monkeypatch.setenv("RENDER", "true")
+    assert security.client_ip(request("198.51.100.7, 76.76.21.1")) == "10.0.0.5"
+
+
 @pytest.fixture()
 def app_logs(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
     import logging

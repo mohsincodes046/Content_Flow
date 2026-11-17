@@ -4,13 +4,13 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import ALLOWED_ORIGINS, publisher_interval_seconds, publisher_is_enabled
 from app.database import initialize_storage
 from app.observability import RequestIdMiddleware, configure_logging
-from app.publisher import recover_interrupted, run_publisher_scheduler
+from app.publisher import recover_interrupted, run_publisher_scheduler, wake_publisher
 from app.routers import ai, analytics, assets, auth, posts, social, submissions, webhooks, workspaces
 
 configure_logging()
@@ -42,6 +42,17 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def wake_publisher_after_changes(request: Request, call_next):
+    """Any successful write may schedule, reschedule or retry a post: let the
+    publisher re-read its queue now rather than on its next (long) timer."""
+    response = await call_next(request)
+    if request.method in {"POST", "PATCH", "PUT", "DELETE"} and response.status_code < 400:
+        wake_publisher()
+    return response
+
 
 # Added before CORS so CORS stays the outermost layer and also covers JSON 500 responses.
 app.add_middleware(RequestIdMiddleware)

@@ -86,7 +86,8 @@ def test_signature_matches_cloudinary_algorithm() -> None:
     assert media.cloudinary_sign(params, "abcd") == "bfd09f95f331f558cbd1320e67aa8d488770583e"
 
 
-def test_local_mode_when_cloudinary_is_not_configured(env: dict) -> None:
+def test_local_mode_when_cloudinary_is_not_configured(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLOUDINARY_URL", raising=False)
     assert env["editor"].get("/api/assets/upload-target").json() == {"mode": "local"}
     assert env["editor"].post("/api/assets/cloudinary", json={"asset_id": "0" * 8 + "-0000-0000-0000-" + "0" * 12}).status_code == 409
 

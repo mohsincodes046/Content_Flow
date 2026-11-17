@@ -208,12 +208,75 @@ async def publish_due(now: Optional[datetime] = None, post_id: Optional[str] = N
             attempted += 1
 
 
+def _as_utc(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def next_wake_at(now: Optional[datetime] = None) -> Optional[datetime]:
+    """When the publisher next has work: the earliest due target or stale claim, or None."""
+    now = now or datetime.now(timezone.utc)
+    candidates: list[datetime] = []
+    with connect_database() as connection:
+        for row in connection.execute(
+            "SELECT posts.scheduled_at, post_targets.next_attempt_at FROM post_targets "
+            "JOIN posts ON posts.id = post_targets.post_id "
+            "WHERE post_targets.status = 'queued' AND posts.status IN ('scheduled', 'publishing')"
+        ).fetchall():
+            times = [t for t in (_as_utc(row["scheduled_at"]), _as_utc(row["next_attempt_at"])) if t]
+            if times:
+                candidates.append(max(times))
+        for row in connection.execute(
+            "SELECT claimed_at FROM post_targets WHERE status = 'publishing'"
+        ).fetchall():
+            claimed = _as_utc(row["claimed_at"])
+            candidates.append((claimed or now) + STALE_CLAIM)
+    return min(candidates) if candidates else None
+
+
+# Set whenever something may have changed the queue (see main.py), so the sleeping
+# publisher re-reads it at once instead of polling the database every minute. Polling
+# would keep a scale-to-zero database (Neon free) awake around the clock.
+_wakers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
+
+
+def wake_publisher() -> None:
+    for loop, event in list(_wakers):
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(event.set)
+
+
 async def run_publisher_scheduler() -> None:
+    waker = (asyncio.get_running_loop(), asyncio.Event())
+    _wakers.add(waker)
+    try:
+        await _scheduler_loop(waker[1])
+    finally:
+        _wakers.discard(waker)
+
+
+async def _scheduler_loop(wake_event: asyncio.Event) -> None:
     interval = publisher_interval_seconds()
+    idle = env_int("CONTENT_FLOW_PUBLISHER_IDLE_SECONDS", 1800, minimum=interval)
     while True:
+        wake_event.clear()
+        sleep_for: float = idle
         try:
             recover_interrupted()
             await publish_due()
+            upcoming = next_wake_at()
+            if upcoming is not None:
+                sleep_for = (upcoming - datetime.now(timezone.utc)).total_seconds()
         except Exception:
             logger.exception("The publisher could not process its queue.")
-        await asyncio.sleep(interval)
+            sleep_for = interval
+        # Never spin faster than the configured interval; never sleep longer than `idle`
+        # (a safety net for changes made outside this process).
+        sleep_for = min(max(sleep_for, interval), idle)
+        try:
+            await asyncio.wait_for(wake_event.wait(), timeout=sleep_for)
+            await asyncio.sleep(1)  # let the waking request commit; batch rapid edits
+        except asyncio.TimeoutError:
+            pass

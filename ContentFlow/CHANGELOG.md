@@ -17,6 +17,16 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
   falls back to `GEMINI_FALLBACK_MODELS` (default `gemini-flash-lite-latest`); quota (429)
   and key errors are not retried. Verified live 17 Nov 2026 with a real key: captions in ~13 s.
 
+- Koyeb image: `backend/Dockerfile` (one worker, no disk needed) and
+  `docs/DEPLOY_FREE_STACK.md` (Neon, Cloudinary, Koyeb, Vercel, Meta URLs, keep-alive).
+- Publisher no longer polls every minute: it sleeps until the next due post or retry,
+  wakes as soon as any request changes data, and otherwise checks every
+  `CONTENT_FLOW_PUBLISHER_IDLE_SECONDS` (default 30 min), so Neon can scale to zero.
+- `CONTENT_FLOW_TRUSTED_PROXY_HOPS`: real client IP behind several proxies
+  (Vercel → Koyeb = 2) for login and registration rate limits.
+- Live (17 Nov 2026): Instagram carousel + Facebook multi-photo, and Instagram Reel +
+  Facebook video, published by the scheduler on the first attempt.
+
 ### Facebook + Instagram go-live preparation
 - Meta login requests `pages_manage_posts` again; `read_insights` is requested only when
   `META_EXTRA_SCOPES` includes it (Meta rejects the whole login for permissions that are
