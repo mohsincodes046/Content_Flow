@@ -14,6 +14,24 @@ from app.security import ai_limits, check_rate_limit, count_recent_events, requi
 
 router = APIRouter()
 
+# Overloaded (500/502/503/504) or retired model (404): worth trying the next model.
+_FALLBACK_STATUSES = {404, 500, 502, 503, 504}
+
+
+async def _call_with_fallback(provider: str, api_key: str, models: list[str], prompt: str) -> str:
+    for index, model in enumerate(models):
+        last = index == len(models) - 1
+        try:
+            # A busy model can hang; leave time for the fallback within one request.
+            return await ai_service.call_caption_provider(provider, api_key, model, prompt, timeout=45 if last else 20)
+        except httpx.HTTPStatusError as error:
+            if last or error.response.status_code not in _FALLBACK_STATUSES:
+                raise
+        except httpx.TimeoutException:
+            if last:
+                raise
+    raise RuntimeError("no AI model configured")  # unreachable: models is never empty
+
 
 @router.post("/api/ai/captions", response_model=CaptionGenerationResponse)
 async def generate_platform_captions(
@@ -21,14 +39,17 @@ async def generate_platform_captions(
     user: Annotated[Row, Depends(require_content_role)],
 ) -> CaptionGenerationResponse:
     provider = os.environ.get("CONTENT_FLOW_AI_PROVIDER", "claude").strip().lower()
+    # (key variable, model variable, default model, default fallback models)
     provider_config = {
-        "openai": ("OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5-mini"),
-        "gemini": ("GEMINI_API_KEY", "GEMINI_MODEL", "gemini-2.5-flash"),
-        "claude": ("ANTHROPIC_API_KEY", "CLAUDE_MODEL", "claude-sonnet-5-5"),
+        "openai": ("OPENAI_API_KEY", "OPENAI_MODEL", "gpt-5-mini", ""),
+        # Google retires pinned Gemini versions for new keys and its free tier often answers
+        # 503 "high demand", so use the moving alias and fall back to the lighter model.
+        "gemini": ("GEMINI_API_KEY", "GEMINI_MODEL", "gemini-flash-latest", "gemini-flash-lite-latest"),
+        "claude": ("ANTHROPIC_API_KEY", "CLAUDE_MODEL", "claude-sonnet-5-5", ""),
     }
     if provider not in provider_config:
         raise HTTPException(status_code=503, detail="Set CONTENT_FLOW_AI_PROVIDER to claude, openai, or gemini.")
-    key_name, model_name, default_model = provider_config[provider]
+    key_name, model_name, default_model, default_fallbacks = provider_config[provider]
     api_key = os.environ.get(key_name, "").strip()
     if not api_key:
         raise HTTPException(status_code=503, detail=f"Configure {key_name} on the backend to generate captions.")
@@ -44,7 +65,9 @@ async def generate_platform_captions(
         detail=f"You have used all {per_day} AI caption generations for the last 24 hours.",
     )
 
-    model = os.environ.get(model_name, default_model).strip()
+    model = os.environ.get(model_name, "").strip() or default_model
+    fallback_raw = os.environ.get(f"{provider.upper()}_FALLBACK_MODELS", default_fallbacks)
+    models = [model] + [m for m in (s.strip() for s in fallback_raw.split(",")) if m and m != model]
     platform_guidance = {
         "instagram": "Make it visual and engaging, with a concise opening and relevant hashtags.",
         "facebook": "Make it conversational and contextual, with few hashtags and a natural invitation to respond.",
@@ -63,7 +86,7 @@ async def generate_platform_captions(
         f"Additional instructions: {payload.instructions or 'None'}\nPlatform requirements:\n{platform_instructions}"
     )
     try:
-        generated_text = await ai_service.call_caption_provider(provider, api_key, model, prompt)
+        generated_text = await _call_with_fallback(provider, api_key, models, prompt)
         generated = CaptionDrafts.model_validate_json(generated_text)
     except httpx.TimeoutException as error:
         raise HTTPException(status_code=502, detail="The AI provider timed out. Please try again.") from error
@@ -74,6 +97,8 @@ async def generate_platform_captions(
             raise HTTPException(status_code=503, detail="The AI provider's usage limit was reached. Please try again in a minute.") from error
         if code in (401, 403):
             raise HTTPException(status_code=503, detail="The AI provider rejected the API key. Check the key on the backend.") from error
+        if code in _FALLBACK_STATUSES:
+            raise HTTPException(status_code=503, detail="The AI provider is busy right now. Please try again in a minute.") from error
         raise HTTPException(status_code=502, detail="The AI provider could not generate captions.") from error
     except httpx.HTTPError as error:
         raise HTTPException(status_code=502, detail="The AI provider could not generate captions.") from error

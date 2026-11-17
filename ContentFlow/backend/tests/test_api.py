@@ -605,7 +605,7 @@ def test_caption_generation_returns_one_draft_per_platform(
     monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
         assert provider == "openai"
         assert api_key == "test-key"
         assert model == "gpt-5-mini"
@@ -642,7 +642,7 @@ def test_claude_caption_generation_uses_configured_model_and_key(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
         assert provider == "claude"
         assert api_key == "test-anthropic-key"
         assert model == "claude-sonnet-5-5"
@@ -703,7 +703,7 @@ def test_gemini_provider_request_and_free_tier_errors(client: TestClient, monkey
     status = {"code": 200}
 
     def handle_request(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        assert str(request.url).startswith("https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-")
         assert request.headers["x-goog-api-key"] == "test-gemini-key"
         body = json.loads(request.content)
         assert body["generationConfig"]["responseMimeType"] == "application/json"
@@ -731,6 +731,49 @@ def test_gemini_provider_request_and_free_tier_errors(client: TestClient, monkey
     bad_key = client.post("/api/ai/captions", json=payload)
     assert bad_key.status_code == 503
     assert "API key" in bad_key.json()["detail"]
+
+    status["code"] = 503
+    busy = client.post("/api/ai/captions", json=payload)
+    assert busy.status_code == 503
+    assert "busy" in busy.json()["detail"]
+
+
+def test_gemini_falls_back_to_lighter_model_when_busy_or_retired(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("GEMINI_MODEL", "")
+    calls: list[str] = []
+    failure = {"code": 503}
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        model = str(request.url).split("/models/")[1].split(":")[0]
+        calls.append(model)
+        if model != "gemini-flash-lite-latest":
+            return httpx.Response(failure["code"], json={"error": {"message": "high demand"}})
+        text = '{"posts":[{"platform":"facebook","caption":"Fresh bread today.","hashtags":["Bakery"]}]}'
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda **kwargs: real_async_client(transport=transport, **kwargs))
+    payload = {"topic": "Fresh bread", "audience": "Neighbours", "platforms": ["facebook"]}
+
+    assert client.post("/api/ai/captions", json=payload).status_code == 200
+    assert calls == ["gemini-flash-latest", "gemini-flash-lite-latest"]
+
+    calls.clear()
+    failure["code"] = 404  # an old pinned model retired for new keys
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    assert client.post("/api/ai/captions", json=payload).status_code == 200
+    assert calls == ["gemini-2.5-flash", "gemini-flash-lite-latest"]
+
+    calls.clear()
+    failure["code"] = 429  # a quota error is not retried on another model
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-flash-latest")
+    assert client.post("/api/ai/captions", json=payload).status_code == 503
+    assert calls == ["gemini-flash-latest"]
 
 
 def test_reject_invalid_platform_and_duplicate_platforms(client: TestClient) -> None:
@@ -948,7 +991,7 @@ def test_ai_caption_daily_quota_counts_every_provider_call(
     monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "2")
     calls: list[str] = []
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
         calls.append(provider)
         if len(calls) == 1:
             raise httpx.ConnectError("provider unavailable")
@@ -974,7 +1017,7 @@ def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.Mo
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "1")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
         return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
 
     monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)

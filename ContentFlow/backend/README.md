@@ -109,7 +109,9 @@ returns `503` and the captions page explains that setup is needed.
 For Claude, set `CONTENT_FLOW_AI_PROVIDER=claude` and `ANTHROPIC_API_KEY`. For
 OpenAI, set `CONTENT_FLOW_AI_PROVIDER=openai` and `OPENAI_API_KEY`. For Gemini,
 set `CONTENT_FLOW_AI_PROVIDER=gemini` and `GEMINI_API_KEY`. Model names can be
-changed with `CLAUDE_MODEL`, `OPENAI_MODEL`, or `GEMINI_MODEL`.
+changed with `CLAUDE_MODEL`, `OPENAI_MODEL`, or `GEMINI_MODEL` (default `gemini-flash-latest`;
+when Gemini is busy or a model is retired it falls back to `GEMINI_FALLBACK_MODELS`,
+default `gemini-flash-lite-latest`).
 
 ## Meta account connection
 

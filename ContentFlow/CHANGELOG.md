@@ -12,6 +12,10 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
   an asset deletes the remote file. Local disk storage is unchanged when unset.
 - AI captions: clear messages when the provider's rate limit is hit or the key is
   rejected; Gemini request path tested.
+- Gemini: default model is now `gemini-flash-latest` (Google retired `gemini-2.5-flash`
+  for new keys). When Gemini answers busy (5xx), retired (404) or times out, the request
+  falls back to `GEMINI_FALLBACK_MODELS` (default `gemini-flash-lite-latest`); quota (429)
+  and key errors are not retried. Verified live 17 Nov 2026 with a real key: captions in ~13 s.
 
 ### Facebook + Instagram go-live preparation
 - Meta login requests `pages_manage_posts` again; `read_insights` is requested only when

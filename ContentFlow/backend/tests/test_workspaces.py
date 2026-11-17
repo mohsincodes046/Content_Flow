@@ -237,7 +237,7 @@ def test_role_permissions(make_client: Callable[..., TestClient], monkeypatch: p
     monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "claude")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
-    async def fake_provider(*args: object) -> str:
+    async def fake_provider(*args: object, **kwargs: object) -> str:
         return '{"posts":[{"platform":"instagram","caption":"Hi.","hashtags":[]}]}'
 
     monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)
@@ -321,7 +321,7 @@ def test_ai_quota_is_shared_by_the_workspace(make_client: Callable[..., TestClie
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "2")
 
-    async def fake_provider(*args: object) -> str:
+    async def fake_provider(*args: object, **kwargs: object) -> str:
         return '{"posts":[{"platform":"instagram","caption":"Hi.","hashtags":[]}]}'
 
     monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)

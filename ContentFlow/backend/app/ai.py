@@ -3,8 +3,8 @@ from __future__ import annotations
 import httpx
 
 
-async def call_caption_provider(provider: str, api_key: str, model: str, prompt: str) -> str:
-    async with httpx.AsyncClient(timeout=45) as client:
+async def call_caption_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         if provider == "openai":
             response = await client.post(
                 "https://api.openai.com/v1/responses",
