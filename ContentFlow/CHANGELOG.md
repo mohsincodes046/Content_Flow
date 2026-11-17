@@ -5,6 +5,13 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 ## Unreleased
 
 ### Facebook + Instagram go-live preparation
+- Meta login requests `pages_manage_posts` again; `read_insights` is requested only when
+  `META_EXTRA_SCOPES` includes it (Meta rejects the whole login for permissions that are
+  not added to the app's use case).
+- Verified live (17 Nov 2026): Page "Daily Needs" and Instagram "rajatalal17" connected
+  through real OAuth; a scheduled post was published by the background worker to both
+  at the scheduled minute (one attempt each, real post IDs and links stored); Instagram
+  account and post insights return real values; Facebook insights return no data yet.
 - Privacy Policy, Terms of Service and Data Deletion pages, linked from the site footer.
 - Meta App Review package (`docs/META_APP_REVIEW.md`): permissions mapped to code,
   dashboard settings, reviewer steps, recording checklist, owner items.

@@ -26,6 +26,17 @@ Last updated: 2026-11-16 · Branch: `Mohsin`
 - Confirm in the Render dashboard which branch (if any) Render deploys from,
   and set the Blueprint Path to `ContentFlow/render.yaml`.
 - Approval before provisioning a paid PostgreSQL database.
+- Facebook + Instagram live verification (17 Nov 2026, real accounts):
+  - Connected: Page "Daily Needs" (token valid, non-expiring, has `pages_manage_posts`)
+    and Instagram professional "rajatalal17" linked to it.
+  - Scheduled post (16:25 Asia/Karachi) published automatically by the background worker
+    to Facebook (`…_122218749560770785`) and Instagram (`18422173327159664`), one attempt
+    each; confirmed on Meta (`is_published`, permalink, caption, image).
+  - Analytics: Instagram account + post insights return real values. Facebook Page/post
+    insights return empty data (Page has no followers yet and the token lacks
+    `read_insights`) and show "Unavailable".
+  - Owner to do: add `read_insights` to the app's use case, set
+    `META_EXTRA_SCOPES=read_insights`, reconnect.
 - Facebook + Instagram go-live (current phase): add the OAuth redirect,
   deauthorize and data-deletion URLs in the Meta app, connect a test Page with
   a linked Instagram professional account, approve the first real test post,

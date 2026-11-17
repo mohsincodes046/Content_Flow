@@ -24,8 +24,8 @@ Use real accounts you control. Tick each line; note anything unexpected.
 - [ ] Create a second workspace from the switcher; data does not cross workspaces.
 
 ## 2. Connect Facebook and Instagram
-- [ ] Social accounts → Connect Facebook & Instagram → approve every permission.
-- [ ] The picker lists your Pages and the linked Instagram account; choose them; Add.
+- [x] Social accounts → Connect Facebook & Instagram → approve every permission.
+- [x] The picker lists your Pages and the linked Instagram account; choose them; Add.
 - [ ] "Check connection" shows Connected.
 - [ ] Disconnect one and reconnect it.
 
@@ -45,7 +45,7 @@ Use real accounts you control. Tick each line; note anything unexpected.
 ## 5. Publishing (real posts — use test accounts)
 - [ ] Publish now on an approved post → Facebook and Instagram both "Published" with
       "View post" links that open the real posts.
-- [ ] Schedule a post 5 minutes ahead; close the browser; it publishes on time.
+- [x] Schedule a post 5 minutes ahead; close the browser; it publishes on time.
 - [ ] Carousel (2–3 images) to Instagram; multi-photo to Facebook; one MP4 to both.
 - [ ] Failure path: revoke the app in Facebook settings, publish → account shows
       "Needs reconnect"; reconnect; "Retry failed" publishes.

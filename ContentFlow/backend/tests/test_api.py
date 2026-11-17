@@ -368,9 +368,20 @@ def test_meta_oauth_start_requires_https_callback_url(
     # Exactly the permissions the product uses (publishing and analytics); any change
     # here affects Meta App Review and should be deliberate.
     assert sorted(authorization_params["scope"][0].split(",")) == sorted([
-        "pages_show_list", "business_management", "pages_read_engagement", "read_insights",
+        "pages_show_list", "business_management", "pages_read_engagement",
         "pages_manage_posts", "instagram_basic", "instagram_content_publish", "instagram_manage_insights",
     ])
+
+
+def test_meta_extra_scopes_are_appended_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import social_oauth
+
+    monkeypatch.setenv("META_EXTRA_SCOPES", " read_insights, pages_manage_posts ,")
+    scopes = social_oauth.meta_scopes().split(",")
+    assert scopes[-1] == "read_insights"
+    assert scopes.count("pages_manage_posts") == 1
+    monkeypatch.delenv("META_EXTRA_SCOPES")
+    assert "read_insights" not in social_oauth.meta_scopes()
 
 
 def test_backend_environment_loads_env_file_without_overriding_process_values(

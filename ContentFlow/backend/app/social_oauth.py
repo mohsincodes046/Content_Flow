@@ -11,14 +11,23 @@ from app import linkedin_api, meta_graph, tiktok_api
 
 # Only what the product uses, which keeps Meta App Review simpler:
 #   pages_show_list, business_management  find the user's Pages (incl. Business Manager Pages)
-#   pages_read_engagement, read_insights  read Page posts and Page/post insights
+#   pages_read_engagement                 read Page posts and their comment/share counts
 #   pages_manage_posts                    publish to Pages
 #   instagram_basic, instagram_content_publish, instagram_manage_insights
 #                                         find, publish to and read insights of Instagram accounts
+# read_insights (Page and Facebook post insights) is requested only when META_EXTRA_SCOPES
+# includes it: Meta rejects the whole login with "Invalid Scopes" if a permission is not
+# added to the app's use case in the Meta dashboard, which would break connecting.
 META_SCOPES = (
-    "pages_show_list,business_management,pages_read_engagement,read_insights,pages_manage_posts,"
+    "pages_show_list,business_management,pages_read_engagement,pages_manage_posts,"
     "instagram_basic,instagram_content_publish,instagram_manage_insights"
 )
+
+
+def meta_scopes() -> str:
+    extra = [s.strip() for s in os.environ.get("META_EXTRA_SCOPES", "").split(",") if s.strip()]
+    base = META_SCOPES.split(",")
+    return ",".join(base + [s for s in extra if s not in base])
 
 PROVIDER_SETTINGS: dict[str, dict[str, str]] = {
     "meta": {
@@ -79,7 +88,7 @@ def build_authorization_url(provider: str, settings: dict[str, str], redirect_ur
         "client_id": settings["client_id_value"],
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": settings["scope"],
+        "scope": meta_scopes(),
         "auth_type": "rerequest",
         "state": state,
     }

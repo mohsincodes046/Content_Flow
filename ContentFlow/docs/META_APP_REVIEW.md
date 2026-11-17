@@ -5,6 +5,12 @@ until the "Owner must provide" items are done, and the owner has approved the su
 
 ## 1. Permissions requested (from `backend/app/social_oauth.py` `META_SCOPES`)
 
+`read_insights` is requested only when `META_EXTRA_SCOPES=read_insights` is set, after it
+has been added to the app's use case (**Use cases → Customize → Permissions**). Without it,
+Page and Facebook post metrics show "Unavailable"; Instagram metrics are unaffected.
+Verified 17 Nov 2026: the connected Page token holds `pages_manage_posts` but not
+`read_insights`.
+
 | Permission | Where it is used | Justification for reviewers |
 |---|---|---|
 | `pages_show_list` | `meta_graph.discover_accounts` → `GET /me/accounts` | Lists the Facebook Pages the user manages so they can choose which Pages to connect to their Content Flow workspace. |
