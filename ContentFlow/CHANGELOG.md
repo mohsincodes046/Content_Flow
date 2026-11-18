@@ -4,6 +4,9 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Clear error for a template CLOUDINARY_URL
+- A `CLOUDINARY_URL` that still holds template values (`<your_api_key>`) is now rejected by the API with a plain message, and the startup `DEPLOYMENT CONFIG` warnings report it. Before, the browser sent the file to Cloudinary and showed "Invalid api_key <your_api_key>".
+
 ### Startup warnings for local settings on a host
 - On Render or Koyeb the API logs `DEPLOYMENT CONFIG:` warnings when public URLs or CORS origins still point at localhost or ngrok, when there is no PostgreSQL URL (SQLite would be erased), or when Cloudinary or secure cookies are missing.
 

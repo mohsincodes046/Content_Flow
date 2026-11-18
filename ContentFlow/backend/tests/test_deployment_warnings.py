@@ -37,3 +37,9 @@ def test_local_values_on_render_are_reported(monkeypatch: pytest.MonkeyPatch) ->
 def test_correct_production_settings_are_quiet(monkeypatch: pytest.MonkeyPatch) -> None:
     _apply(monkeypatch, {**GOOD, "RENDER": "true"}, ["https://app.vercel.app"])
     assert config.deployment_warnings() == []
+
+
+def test_placeholder_cloudinary_url_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    _apply(monkeypatch, {**GOOD, "RENDER": "true", "CLOUDINARY_URL": "cloudinary://<your_api_key>:<your_api_secret>@c"},
+           ["https://app.vercel.app"])
+    assert any("CLOUDINARY_URL is invalid" in w for w in config.deployment_warnings())

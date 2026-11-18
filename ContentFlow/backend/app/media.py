@@ -133,7 +133,13 @@ def cloudinary_config() -> Optional[CloudinaryConfig]:
     parsed = urlparse(raw)
     if parsed.scheme != "cloudinary" or not (parsed.username and parsed.password and parsed.hostname):
         raise MediaError("CLOUDINARY_URL must look like cloudinary://<api_key>:<api_secret>@<cloud_name>.")
-    return CloudinaryConfig(parsed.hostname, unquote(parsed.username), unquote(parsed.password))
+    api_key, api_secret = unquote(parsed.username), unquote(parsed.password)
+    # A template copied as-is ("<your_api_key>") would only fail later, inside Cloudinary.
+    if any(mark in part for part in (api_key, api_secret) for mark in ("<", ">", " ", "your_api")):
+        raise MediaError("Media uploads are not set up correctly: CLOUDINARY_URL still contains placeholder "
+                         "values. Put the real API Key (digits) and API Secret from Cloudinary "
+                         "(Settings > API Keys) into CLOUDINARY_URL on the server.")
+    return CloudinaryConfig(parsed.hostname, api_key, api_secret)
 
 
 def cloudinary_sign(params: dict[str, object], api_secret: str) -> str:

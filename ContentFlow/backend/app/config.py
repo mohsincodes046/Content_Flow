@@ -68,6 +68,12 @@ def deployment_warnings() -> list[str]:
     if not os.environ.get("CLOUDINARY_URL", "").strip():
         warnings.append("CLOUDINARY_URL is not set: uploads are stored on local disk, which a host without a "
                         "persistent disk erases, and proxied uploads are limited by the web host.")
+    else:
+        from app.media import MediaError, cloudinary_config
+        try:
+            cloudinary_config()
+        except MediaError as error:
+            warnings.append(f"CLOUDINARY_URL is invalid: {error}")
     if os.environ.get("CONTENT_FLOW_COOKIE_SECURE", "").lower() != "true":
         warnings.append("CONTENT_FLOW_COOKIE_SECURE is not 'true'.")
     return warnings

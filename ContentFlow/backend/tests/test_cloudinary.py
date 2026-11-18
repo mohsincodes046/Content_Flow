@@ -163,3 +163,10 @@ def test_deleting_a_cloudinary_asset_removes_the_remote_file(env: dict, cloud: d
 
 def test_local_uploads_still_work_alongside(env: dict) -> None:
     assert upload(env["editor"])
+
+
+def test_placeholder_credentials_are_rejected_before_any_upload(env: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLOUDINARY_URL", "cloudinary://<your_api_key>:<your_api_secret>@democloud")
+    response = env["editor"].get("/api/assets/upload-target")
+    assert response.status_code == 503
+    assert "placeholder" in response.json()["detail"] and "your_api" not in response.json()["detail"]
