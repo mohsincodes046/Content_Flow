@@ -555,7 +555,8 @@ def test_meta_exchange_and_discovery_follow_pagination_and_page_permissions(
         if page_id == "page-42":
             return httpx.Response(200, json={"instagram_business_account": {
                 "id": "instagram-77", "username": "contentflow.official", "followers_count": 1200}})
-        return httpx.Response(200, json={"id": page_id})
+        # A Page Meta refuses to describe must not block connecting the others.
+        return httpx.Response(400, json={"error": {"message": "(#10) Requires permission", "code": 10}})
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handle_request)

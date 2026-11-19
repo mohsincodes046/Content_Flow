@@ -4,6 +4,11 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Public customers and Meta App Review
+- Connecting Meta no longer fails for a customer with many Pages when Meta refuses to describe one Page: that Page's Instagram lookup is skipped and logged (a token error still stops the connection).
+- `docs/META_APP_REVIEW.md`: production URLs, why non-role users cannot connect yet (Advanced Access, App Review, Business Verification), dashboard status table and the data deletion / deauthorize fixes.
+- App icon for Meta: `frontend/public/brand/contentflow-app-icon-1024.png` (1024×1024, from the existing logo mark).
+
 ### Clear error for a template CLOUDINARY_URL
 - A `CLOUDINARY_URL` that still holds template values (`<your_api_key>`) is now rejected by the API with a plain message, and the startup `DEPLOYMENT CONFIG` warnings report it. Before, the browser sent the file to Cloudinary and showed "Invalid api_key <your_api_key>".
 

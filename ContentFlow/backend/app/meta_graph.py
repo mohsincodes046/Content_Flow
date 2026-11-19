@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_GRAPH_VERSION = "v26.0"
 TOKEN_ERROR_CODES = {190, 102}   # expired, revoked or invalid authorization
@@ -148,9 +151,17 @@ async def discover_accounts(user_token: str) -> dict[str, Any]:
             "details": {"category": page.get("category"), "can_publish": can_publish, "tasks": tasks},
             "tokens": tokens,
         })
-        linked = await request("GET", str(page["id"]), token=page_token, params={
-            "fields": "instagram_business_account{id,username,name,profile_picture_url,followers_count}",
-        })
+        try:
+            linked = await request("GET", str(page["id"]), token=page_token, params={
+                "fields": "instagram_business_account{id,username,name,profile_picture_url,followers_count}",
+            })
+        except GraphError as error:
+            if error.needs_reconnect:
+                raise
+            # One Page Meta refuses to describe (restricted Page, limited role) must not
+            # stop a customer with many Pages from connecting the others.
+            logger.warning("Skipping Instagram lookup for one Page: Graph error code %s", error.code)
+            linked = {}
         instagram = linked.get("instagram_business_account")
         if isinstance(instagram, dict) and instagram.get("id"):
             accounts.append({
