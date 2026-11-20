@@ -17,6 +17,33 @@ type Candidate = {
 };
 type Pending = { id: string; provider: string; signed_in_as?: string | null; candidates: Candidate[] };
 
+// Which accounts the user asked for. Meta signs in once for Pages and their linked
+// Instagram accounts; the choice only decides which accounts the picker offers.
+type ConnectMode = "facebook" | "instagram" | "both";
+const CONNECT_MODE_KEY = "contentflow.metaConnectMode";
+const connectModes: Array<{ mode: ConnectMode; label: string; primary?: boolean }> = [
+  { mode: "both", label: "＋ Connect Instagram & Facebook", primary: true },
+  { mode: "facebook", label: "＋ Connect Facebook" },
+  { mode: "instagram", label: "＋ Connect Instagram" },
+];
+const emptyForMode: Record<ConnectMode, string> = {
+  facebook: "Meta sign-in worked, but no Facebook Pages you manage were found.",
+  instagram: "Meta sign-in worked, but none of your Facebook Pages has a linked Instagram professional account. Link one in Instagram (Settings → Account type and tools) or in Meta Business Suite, then connect again.",
+  both: "Meta sign-in worked, but no Facebook Pages you manage were found.",
+};
+function takeConnectMode(): ConnectMode {
+  try {
+    const stored = window.sessionStorage.getItem(CONNECT_MODE_KEY);
+    window.sessionStorage.removeItem(CONNECT_MODE_KEY);
+    return stored === "facebook" || stored === "instagram" ? stored : "both";
+  } catch {
+    return "both";
+  }
+}
+function rememberConnectMode(mode: ConnectMode) {
+  try { window.sessionStorage.setItem(CONNECT_MODE_KEY, mode); } catch { /* the picker then shows every account */ }
+}
+
 const platformLabel: Record<string, string> = { facebook: "Facebook Page", instagram: "Instagram", tiktok: "TikTok", linkedin: "LinkedIn", youtube: "YouTube" };
 const platformIcon: Record<string, { icon: string; color: string }> = {
   facebook: { icon: "f", color: "#4d76e9" }, instagram: { icon: "◎", color: "#e76072" },
@@ -63,11 +90,18 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
     query.delete("social");
     query.delete("connection");
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${query.toString() ? `?${query}` : ""}`);
+    const mode = takeConnectMode();
     if (result === "select" && connectionId) {
       api<Pending>(`/api/social/connections/${encodeURIComponent(connectionId)}`, {}, "Unable to load the accounts from Meta")
         .then((loaded) => {
-          setPending(loaded);
-          setChosen(loaded.candidates.filter((c) => !c.already_connected && c.can_publish).map((c) => c.key));
+          const candidates = mode === "both" ? loaded.candidates : loaded.candidates.filter((c) => c.platform === mode);
+          if (!candidates.length) {
+            void api(`/api/social/connections/${encodeURIComponent(connectionId)}`, { method: "DELETE" }).catch(() => undefined);
+            setNotice(emptyForMode[mode]);
+            return;
+          }
+          setPending({ ...loaded, candidates });
+          setChosen(candidates.filter((c) => !c.already_connected && c.can_publish).map((c) => c.key));
         })
         .catch((failure: unknown) => setNotice(failure instanceof Error ? failure.message : "Unable to load the accounts from Meta."));
     } else {
@@ -95,15 +129,15 @@ export default function AccountsSection({ user, setNotice }: { user: SessionUser
   }
 
   const connectHref = `${apiUrl}/api/social/oauth/meta/start`;
-  const connectButton = (label: string) => meta?.configured
-    ? <a className="button button-primary" href={connectHref}>{label}</a>
-    : <button type="button" className="button button-outline" onClick={() => setNotice("Facebook and Instagram connections are not set up on this server yet. Ask your Content-Flow administrator to configure Meta sign-in.")}>{label}</button>;
+  const connectButton = ({ mode, label, primary }: (typeof connectModes)[number]) => meta?.configured
+    ? <a key={mode} className={`button ${primary ? "button-primary" : "button-outline"}`} href={connectHref} onClick={() => rememberConnectMode(mode)}>{label}</a>
+    : <button key={mode} type="button" className="button button-outline" onClick={() => setNotice("Facebook and Instagram connections are not set up on this server yet. Ask your Content-Flow administrator to configure Meta sign-in.")}>{label}</button>;
 
   return <section className="panel manage-accounts-panel">
     <div className="section-card-heading">
       <div><span className="calendar-month-label">SOCIAL CONNECTIONS</span><h2>Connected accounts</h2>
-        <p>Facebook Pages and the Instagram professional accounts linked to them, connected through Meta sign-in.</p></div>
-      {manager && <div className="team-actions">{connectButton("＋ Connect Facebook & Instagram")}{others.map((p) => p.configured
+        <p>Connect Facebook Pages, Instagram professional accounts, or both, through Meta sign-in. An Instagram account must be a Business or Creator account linked to a Facebook Page.</p></div>
+      {manager && <div className="team-actions">{connectModes.map(connectButton)}{others.map((p) => p.configured
         ? <a key={p.provider} className="button button-outline" href={`${apiUrl}/api/social/oauth/${p.provider}/start`}>＋ Connect {platformLabel[p.provider]}</a>
         : <button key={p.provider} type="button" className="button button-outline" title="Not configured on this server" onClick={() => setNotice(`${platformLabel[p.provider]} is not set up on this server yet. An administrator must add the app credentials.`)}>＋ {platformLabel[p.provider]}</button>)}</div>}
     </div>

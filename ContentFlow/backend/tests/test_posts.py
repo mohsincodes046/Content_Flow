@@ -153,11 +153,23 @@ def test_uploads_are_checked_and_listed(env: dict) -> None:
     assert [a["id"] for a in editor.get("/api/assets?kind=video").json()] == [video]
 
 
-def test_media_in_use_cannot_be_deleted(env: dict) -> None:
+def test_media_is_protected_only_while_a_post_may_still_publish(env: dict) -> None:
     editor = env["editor"]
-    used, unused = upload(editor), upload(editor)
-    editor.post("/api/posts", json={"asset_ids": [used], "targets": [{"social_account_id": "fb"}]})
-    assert editor.delete(f"/api/assets/{used}").status_code == 409
+    scheduled_media, draft_media, unused = upload(editor), upload(editor), upload(editor)
+    scheduled = editor.post("/api/posts", json={"asset_ids": [scheduled_media], "targets": [{"social_account_id": "fb"}],
+                                                "action": "schedule", "schedule": later(2)}).json()
+    draft = editor.post("/api/posts", json={"caption": "keep me", "asset_ids": [draft_media],
+                                            "targets": [{"social_account_id": "fb"}]}).json()
+    blocked = editor.delete(f"/api/assets/{scheduled_media}")
+    assert blocked.status_code == 409 and "scheduled" in blocked.json()["detail"]
+
+    assert editor.delete(f"/api/assets/{draft_media}").status_code == 204  # the draft just loses the file
+    kept = editor.get(f"/api/posts/{draft['id']}").json()
+    assert kept["caption"] == "keep me" and kept["status"] == "draft"
+    assert draft_media not in str(kept)
+
+    editor.post(f"/api/posts/{scheduled['id']}/unschedule")
+    assert editor.delete(f"/api/assets/{scheduled_media}").status_code == 204  # no longer waiting to publish
     assert editor.delete(f"/api/assets/{unused}").status_code == 204
     assert editor.get(f"/api/assets/{unused}/content").status_code == 404
 

@@ -4,6 +4,10 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### Separate Facebook / Instagram connect, and deleting used media
+- Social accounts: three options, **Connect Instagram & Facebook**, **Connect Facebook**, **Connect Instagram**. All use the same Meta sign-in; the picker then offers only the chosen platform's accounts.
+- Content library: media can be deleted unless a post that may still publish (in review, approved, scheduled, publishing) uses it. Drafts, rejected, published and failed posts keep their caption, status and links and just lose the file.
+
 ### Public customers and Meta App Review
 - Connecting Meta no longer fails for a customer with many Pages when Meta refuses to describe one Page: that Page's Instagram lookup is skipped and logged (a token error still stops the connection).
 - `docs/META_APP_REVIEW.md`: production URLs, why non-role users cannot connect yet (Advanced Access, App Review, Business Verification), dashboard status table and the data deletion / deauthorize fixes.

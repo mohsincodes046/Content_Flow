@@ -222,18 +222,24 @@ def delete_asset(asset_id: str, user: Annotated[Row, Depends(require_content_rol
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Media not found.")
-        in_use = connection.execute(
+        # Only a post that may still publish needs its media. Drafts, rejected, published
+        # and failed posts keep their caption, status and published links; they just no
+        # longer show this file.
+        pending = connection.execute(
             """
-            SELECT (SELECT COUNT(*) FROM post_media WHERE asset_id = ?)
-                 + (SELECT COUNT(*) FROM scheduled_posts WHERE asset_id = ?) AS uses
+            SELECT COUNT(*) AS uses FROM post_media JOIN posts ON posts.id = post_media.post_id
+            WHERE post_media.asset_id = ? AND posts.status IN ('in_review', 'approved', 'scheduled', 'publishing')
             """,
-            (asset_id, asset_id),
+            (asset_id,),
         ).fetchone()["uses"]
-        if in_use or row["submission_id"] is not None:
+        if pending:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="This media is used by a post or submission. Remove it there first.",
+                detail="This media is in a post that is waiting for review or scheduled to publish. "
+                       "Remove it from that post, or unschedule or delete the post, first.",
             )
+        connection.execute("DELETE FROM post_media WHERE asset_id = ?", (asset_id,))
+        connection.execute("UPDATE scheduled_posts SET asset_id = NULL WHERE asset_id = ?", (asset_id,))
         connection.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
         record_audit(connection, user["workspace_id"], user["id"], "asset.deleted", "asset", asset_id,
                      {"filename": row["filename"]})
