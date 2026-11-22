@@ -104,7 +104,8 @@ async def _call_with_fallback(provider: str, api_key: str, models: list[str], pr
             return await ai_service.call_caption_provider(provider, api_key, model, prompt,
                                                           timeout=45 if last else 20, user_message=user_message)
         except httpx.HTTPStatusError as error:
-            if last or error.response.status_code not in _FALLBACK_STATUSES:
+            # Gemini's free-tier quotas are per model, so a 429 on one may still leave the next.
+            if last or error.response.status_code not in _FALLBACK_STATUSES | {429}:
                 raise
         except httpx.TimeoutException:
             if last:

@@ -82,6 +82,23 @@ class CaptionDraft(BaseModel):
     call_to_action: str = Field(default="", max_length=300)
     variant: int = 1  # renumbered by the API; a model's own numbering is not trusted
 
+    @model_validator(mode="before")
+    @classmethod
+    def tidy_model_output(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if isinstance(data.get("platform"), str):
+            data["platform"] = data["platform"].strip().lower()
+        tags = data.get("hashtags") or []
+        if isinstance(tags, str):
+            tags = tags.replace(",", " ").split()
+        data["hashtags"] = [str(tag).strip().lstrip("#") for tag in tags if str(tag).strip().lstrip("#")][:15]
+        data["call_to_action"] = str(data.get("call_to_action") or "")[:300]
+        if not isinstance(data.get("variant"), int):
+            data["variant"] = 1
+        return data
+
 
 class CaptionDrafts(BaseModel):
     posts: list[CaptionDraft] = Field(min_length=1, max_length=15)
@@ -118,15 +135,56 @@ class AIAssistRequest(BaseModel):
         return value
 
 
+_PLATFORM_NAMES = {"instagram", "facebook", "linkedin", "youtube", "tiktok"}
+
+
 class AIAssistItem(BaseModel):
     platform: Optional[Platform] = None
     title: str = Field(default="", max_length=200)
     text: str = Field(min_length=1, max_length=5000)
     hashtags: list[str] = Field(default_factory=list, max_length=30)
 
+    @model_validator(mode="before")
+    @classmethod
+    def tidy_model_output(cls, data: object) -> object:
+        """Models are loose with the shape: "Instagram", "TikTok (short video)", nulls,
+        over-long titles, "#tags" or a hashtag string. Normalise instead of failing."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        raw = str(data.get("platform") or "").strip().lower()
+        data["platform"] = next((name for name in _PLATFORM_NAMES if name in raw), None)
+        data["title"] = str(data.get("title") or "")[:200]
+        text = data.get("text") or data.get("description") or data.get("caption") or data.get("content") or ""
+        data["text"] = str(text).strip()[:5000]
+        tags = data.get("hashtags") or []
+        if isinstance(tags, str):
+            tags = tags.replace(",", " ").split()
+        data["hashtags"] = [str(tag).strip().lstrip("#") for tag in tags if str(tag).strip().lstrip("#")][:30]
+        for extra in ("description", "caption", "content"):
+            data.pop(extra, None)
+        return data
+
 
 class AIAssistItems(BaseModel):
     items: list[AIAssistItem] = Field(min_length=1, max_length=25)
+
+    @model_validator(mode="before")
+    @classmethod
+    def find_the_list(cls, data: object) -> object:
+        """Accept a bare list, or the list under another key ("ideas", "results", ...),
+        and drop entries with no text rather than failing the whole answer."""
+        if isinstance(data, list):
+            data = {"items": data}
+        if isinstance(data, dict) and "items" not in data:
+            lists = [value for value in data.values() if isinstance(value, list)]
+            if len(lists) == 1:
+                data = {"items": lists[0]}
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            items = [item for item in data["items"] if isinstance(item, dict) and any(
+                str(item.get(key) or "").strip() for key in ("text", "description", "caption", "content"))]
+            data = {"items": items[:25]}
+        return data
 
 
 class AIAssistResponse(BaseModel):

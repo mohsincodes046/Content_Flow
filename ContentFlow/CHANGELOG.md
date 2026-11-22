@@ -4,6 +4,10 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### AI studio: production fixes
+- AI answers in a slightly different shape (another list key, capitalised or descriptive platform names, `description` instead of `text`, hashtag strings, nulls) are normalised instead of failing with "invalid format" (seen live on the Ideas tool).
+- A Gemini 429 now tries the fallback model too, because free-tier quotas are per model.
+
 ### AI content studio
 - **AI studio** page (was "AI captions"): Captions, Content ideas, Rewrite, Repurpose, Hashtags, Call to action, Description and Image tools for Instagram, Facebook, LinkedIn and TikTok.
 - Captions: tone, short / medium / long-form, 1-3 variations per platform and an optional call to action. Old requests still work.

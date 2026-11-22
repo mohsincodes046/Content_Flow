@@ -746,12 +746,12 @@ def test_gemini_falls_back_to_lighter_model_when_busy_or_retired(
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("GEMINI_MODEL", "")
     calls: list[str] = []
-    failure = {"code": 503}
+    failure: dict = {"code": 503, "model": ""}
 
     def handle_request(request: httpx.Request) -> httpx.Response:
         model = str(request.url).split("/models/")[1].split(":")[0]
         calls.append(model)
-        if model != "gemini-flash-lite-latest":
+        if model != "gemini-flash-lite-latest" or failure["model"] == "*":
             return httpx.Response(failure["code"], json={"error": {"message": "high demand"}})
         text = '{"posts":[{"platform":"facebook","caption":"Fresh bread today.","hashtags":["Bakery"]}]}'
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
@@ -771,10 +771,16 @@ def test_gemini_falls_back_to_lighter_model_when_busy_or_retired(
     assert calls == ["gemini-2.5-flash", "gemini-flash-lite-latest"]
 
     calls.clear()
-    failure["code"] = 429  # a quota error is not retried on another model
+    failure["code"] = 429  # Gemini quotas are per model: try the lighter one
     monkeypatch.setenv("GEMINI_MODEL", "gemini-flash-latest")
-    assert client.post("/api/ai/captions", json=payload).status_code == 503
-    assert calls == ["gemini-flash-latest"]
+    assert client.post("/api/ai/captions", json=payload).status_code == 200
+    assert calls == ["gemini-flash-latest", "gemini-flash-lite-latest"]
+
+    calls.clear()
+    failure["model"] = "*"  # every model out of quota: a clear 503, not a crash
+    limited = client.post("/api/ai/captions", json=payload)
+    assert limited.status_code == 503 and "usage limit" in limited.json()["detail"]
+    assert calls == ["gemini-flash-latest", "gemini-flash-lite-latest"]
 
 
 def test_reject_invalid_platform_and_duplicate_platforms(client: TestClient) -> None:

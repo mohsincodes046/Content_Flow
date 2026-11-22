@@ -145,3 +145,25 @@ def test_gemini_image_request_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     real = httpx.AsyncClient
     monkeypatch.setattr(ai_service.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handle), **kw))
     assert asyncio.run(ai_service.generate_image("k", "img-model", "p", "9:16")) == ("image/jpeg", b"jpegbytes")
+
+
+def test_loose_model_output_is_normalised(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Shapes real models return: another key, capitalised platforms, "description"
+    # instead of text, hashtag strings, nulls and an empty entry.
+    fake(monkeypatch, {"ideas": [
+        {"platform": "TikTok (short video)", "title": "T" * 300, "description": "Film the stitching", "hashtags": "#leather, #handmade"},
+        {"platform": None, "text": "Behind the scenes", "hashtags": None},
+        {"platform": "Facebook", "text": ""},
+    ]}, [])
+    response = client.post("/api/ai/assist", json={"task": "ideas", "text": "wallets", "platforms": ["tiktok", "facebook"]})
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert [(i["platform"], i["text"], i["hashtags"]) for i in items] == [
+        ("tiktok", "Film the stitching", ["leather", "handmade"]), (None, "Behind the scenes", [])]
+    assert len(items[0]["title"]) == 200
+
+    fake(monkeypatch, {"posts": [{"platform": "Instagram", "caption": "Hi", "hashtags": "#a #b", "variant": "x", "call_to_action": None}]}, [])
+    caption = client.post("/api/ai/captions", json={"topic": "x", "audience": "y", "platforms": ["instagram"]})
+    assert caption.status_code == 200, caption.text
+    assert caption.json()["posts"][0] | {} == {"platform": "instagram", "caption": "Hi", "hashtags": ["a", "b"],
+                                               "call_to_action": "", "variant": 1}
