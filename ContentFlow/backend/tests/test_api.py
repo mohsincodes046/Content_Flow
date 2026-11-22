@@ -606,11 +606,11 @@ def test_caption_generation_returns_one_draft_per_platform(
     monkeypatch.setenv("CONTENT_FLOW_AI_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45, **_: object) -> str:
         assert provider == "openai"
         assert api_key == "test-key"
         assert model == "gpt-5-mini"
-        assert "distinct post for each requested platform" in prompt
+        assert "variation(s) for each requested platform" in prompt
         return (
             '{"posts":['
             '{"platform":"instagram","caption":"A visual launch.","hashtags":["CourseLaunch"]},'
@@ -643,7 +643,7 @@ def test_claude_caption_generation_uses_configured_model_and_key(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45, **_: object) -> str:
         assert provider == "claude"
         assert api_key == "test-anthropic-key"
         assert model == "claude-sonnet-5-5"
@@ -992,7 +992,7 @@ def test_ai_caption_daily_quota_counts_every_provider_call(
     monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "2")
     calls: list[str] = []
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45, **_: object) -> str:
         calls.append(provider)
         if len(calls) == 1:
             raise httpx.ConnectError("provider unavailable")
@@ -1010,7 +1010,7 @@ def test_ai_caption_daily_quota_counts_every_provider_call(
     assert succeeded.status_code == 200
     assert over_quota.status_code == 429
     assert len(calls) == 2
-    assert usage.json() == {"used_last_24h": 2, "daily_limit": 2, "remaining": 0}
+    assert {k: usage.json()[k] for k in ("used_last_24h", "daily_limit", "remaining")} == {"used_last_24h": 2, "daily_limit": 2, "remaining": 0}
 
 
 def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1018,7 +1018,7 @@ def test_ai_quota_is_tracked_per_user(client: TestClient, monkeypatch: pytest.Mo
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("CONTENT_FLOW_AI_DAILY_LIMIT", "1")
 
-    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+    async def fake_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45, **_: object) -> str:
         return '{"posts":[{"platform":"instagram","caption":"Hello.","hashtags":[]}]}'
 
     monkeypatch.setattr(ai_service, "call_caption_provider", fake_provider)

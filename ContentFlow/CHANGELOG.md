@@ -4,6 +4,13 @@ All notable changes to Content Flow. Newest first. Commits are on the `Mohsin` b
 
 ## Unreleased
 
+### AI content studio
+- **AI studio** page (was "AI captions"): Captions, Content ideas, Rewrite, Repurpose, Hashtags, Call to action, Description and Image tools for Instagram, Facebook, LinkedIn and TikTok.
+- Captions: tone, short / medium / long-form, 1-3 variations per platform and an optional call to action. Old requests still work.
+- New `POST /api/ai/assist` (ideas, rewrite, repurpose, hashtags, call_to_action, description) and `POST /api/ai/image` (Gemini image model, only when `CONTENT_FLOW_AI_IMAGE_MODEL` is set; images are saved to the library through the normal upload).
+- Results are editable; **Use in new post** opens the composer with the text, still a draft.
+- Usage: the daily text limit is shared by all tools; images have their own `CONTENT_FLOW_AI_IMAGE_DAILY_LIMIT` (default 10). `GET /api/ai/usage` reports both.
+
 ### Separate Facebook / Instagram connect, and deleting used media
 - Social accounts: three options, **Connect Instagram & Facebook**, **Connect Facebook**, **Connect Instagram**. All use the same Meta sign-in; the picker then offers only the chosen platform's accounts.
 - Content library: media can be deleted unless a post that may still publish (in review, approved, scheduled, publishing) uses it. Drafts, rejected, published and failed posts keep their caption, status and links and just lose the file.

@@ -8,6 +8,7 @@ import {
   type Asset, type Post, type SessionUser,
 } from "../lib/api";
 import type { SocialAccount } from "./AccountsSection";
+import { AI_DRAFT_KEY } from "./AIStudio";
 
 type Member = { user_id: string; full_name: string; role: string };
 type Draft = {
@@ -50,6 +51,18 @@ export default function ComposePost({ user, setNotice }: { user: SessionUser; se
   const postId = useSearchParams().get("id");
   const [post, setPost] = useState<Post | null>(null);
   const [draft, setDraft] = useState<Draft>(toDraft(null));
+  // Text sent from the AI studio ("Use in new post") starts a new, still editable draft.
+  useEffect(() => {
+    if (postId) return;
+    try {
+      const fromAI = window.sessionStorage.getItem(AI_DRAFT_KEY);
+      if (fromAI) {
+        window.sessionStorage.removeItem(AI_DRAFT_KEY);
+        // sessionStorage only exists in the browser, so this runs after the first render.
+        queueMicrotask(() => setDraft((current) => ({ ...current, caption: fromAI.slice(0, 5000) })));
+      }
+    } catch { /* storage blocked: start empty */ }
+  }, [postId]);
   const [accounts, setAccounts] = useState<SocialAccount[]>([]);
   const [library, setLibrary] = useState<Asset[]>([]);
   const [reviewers, setReviewers] = useState<Member[]>([]);

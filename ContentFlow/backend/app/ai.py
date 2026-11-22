@@ -3,7 +3,11 @@ from __future__ import annotations
 import httpx
 
 
-async def call_caption_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45) -> str:
+DEFAULT_USER_MESSAGE = "Generate one distinct post for each requested platform and return only the requested JSON."
+
+
+async def call_caption_provider(provider: str, api_key: str, model: str, prompt: str, timeout: float = 45,
+                                user_message: str = DEFAULT_USER_MESSAGE) -> str:
     async with httpx.AsyncClient(timeout=timeout) as client:
         if provider == "openai":
             response = await client.post(
@@ -12,7 +16,7 @@ async def call_caption_provider(provider: str, api_key: str, model: str, prompt:
                 json={
                     "model": model,
                     "instructions": prompt,
-                    "input": "Generate one distinct post for each requested platform.",
+                    "input": user_message,
                     "text": {"format": {"type": "json_object"}},
                 },
             )
@@ -34,11 +38,11 @@ async def call_caption_provider(provider: str, api_key: str, model: str, prompt:
                 },
                 json={
                     "model": model,
-                    "max_tokens": 1500,
+                    "max_tokens": 4000,
                     "system": prompt,
                     "messages": [{
                         "role": "user",
-                        "content": "Generate one distinct post for each requested platform and return only the requested JSON.",
+                        "content": user_message,
                     }],
                 },
             )
@@ -70,3 +74,27 @@ async def call_caption_provider(provider: str, api_key: str, model: str, prompt:
     if not text:
         raise ValueError("The AI provider returned no caption text.")
     return text
+
+
+async def generate_image(api_key: str, model: str, prompt: str, aspect_ratio: str, timeout: float = 90) -> tuple[str, bytes]:
+    """Gemini image generation. Returns (media type, image bytes)."""
+    import base64
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": api_key},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": aspect_ratio}},
+            },
+        )
+        response.raise_for_status()
+        result = response.json()
+    for candidate in result.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            inline = part.get("inlineData") or part.get("inline_data") if isinstance(part, dict) else None
+            if isinstance(inline, dict) and isinstance(inline.get("data"), str):
+                media_type = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+                return media_type, base64.b64decode(inline["data"])
+    raise ValueError("The AI provider returned no image.")

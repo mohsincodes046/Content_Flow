@@ -1012,3 +1012,16 @@ button.workspace-switch { width: 100%; color: inherit; font: inherit; text-align
 .legal-page h2 { margin: 26px 0 6px; font-size: 16px; }
 .legal-updated { color: #A1A1AA; font-size: 12px; }
 .legal-page li { margin: 4px 0; }
+
+/* AI content studio */
+.ai-studio { max-width: 760px; }
+.ai-usage { display: block; margin: -6px 0 4px; color: #A1A1AA; font-size: 11px; }
+.ai-tool-tabs { flex-wrap: wrap; padding-top: 8px; }
+.ai-option-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+.ai-option-row > label { display: grid; gap: 6px; color: #A1A1AA; font-size: 10px; font-weight: 700; }
+.ai-generator-form .ai-checkbox { display: flex; align-items: center; gap: 8px; color: #F8FAFC; font-size: 12px; font-weight: 500; }
+.ai-result-links { display: inline-flex; gap: 12px; }
+.ai-result-text { width: 100%; min-height: 96px; margin: 10px 0 8px; padding: 9px 10px; border: 1px solid #273044; border-radius: 5px; background: #0B0F19; color: #D4D4D8; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
+.ai-image-result { margin-top: 16px; display: grid; gap: 10px; }
+.ai-image-result img { width: 100%; max-width: 420px; height: auto; border: 1px solid #273044; border-radius: 8px; }
+.ai-result-actions { display: flex; flex-wrap: wrap; gap: 8px; }

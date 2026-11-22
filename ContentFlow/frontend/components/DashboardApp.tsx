@@ -12,6 +12,7 @@ import TeamSection from "./TeamSection";
 import WorkspaceSwitcher, { NoWorkspace } from "./WorkspaceSwitcher";
 import { api, apiUrl, assetUrl, browserTimezone, canEditContent, isSessionUser, uploadAsset, type Asset, type Post, type PostStatus, type SessionUser } from "../lib/api";
 import ComposePost from "./ComposePost";
+import AIStudio from "./AIStudio";
 import PostsList from "./PostsList";
 import ReviewQueue from "./ReviewQueue";
 
@@ -54,7 +55,7 @@ const navigation = [
   { label: "Bulk schedule", href: "/bulk-schedule", icon: "stack", badge: "CORE" },
   { label: "Submit content", href: "/create-post", icon: "plus" },
   { label: "Review queue", href: "/review-queue", icon: "spark" },
-  { label: "AI captions", href: "/ai-captions", icon: "spark" },
+  { label: "AI studio", href: "/ai-captions", icon: "spark" },
   { label: "Analytics", href: "/analytics", icon: "chart", section: "MANAGE" },
   { label: "Social accounts", href: "/accounts", icon: "share" },
   { label: "Team", href: "/team", icon: "users" },
@@ -537,14 +538,6 @@ function SectionContent({ section, sectionName, currentUser, connectedAccounts, 
 }) {
   const [selectedMonth, setSelectedMonth] = useState(() => { const now = new Date(); return new Date(now.getFullYear(), now.getMonth(), 1); });
   const [query, setQuery] = useState("");
-  const [captionTopic, setCaptionTopic] = useState("");
-  const [captionAudience, setCaptionAudience] = useState("");
-  const [captionInstructions, setCaptionInstructions] = useState("");
-  const [captionLanguage, setCaptionLanguage] = useState("English");
-  const [captionPlatforms, setCaptionPlatforms] = useState<string[]>(["instagram", "linkedin"]);
-  const [captionDrafts, setCaptionDrafts] = useState<Array<{ platform: string; caption: string; hashtags: string[] }>>([]);
-  const [captionPending, setCaptionPending] = useState(false);
-  const [captionError, setCaptionError] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -562,56 +555,6 @@ function SectionContent({ section, sectionName, currentUser, connectedAccounts, 
   const todayLabel = now.toLocaleDateString("en", { weekday: "long", month: "long", day: "numeric" }).toUpperCase();
   const monthDays = new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() + 1, 0).getDate();
 
-  function toggleCaptionPlatform(platform: string) {
-    setCaptionPlatforms((current) => current.includes(platform)
-      ? current.filter((item) => item !== platform)
-      : [...current, platform]);
-  }
-
-  async function generateCaptions(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCaptionError("");
-    setCaptionDrafts([]);
-    if (captionPlatforms.length === 0) {
-      setCaptionError("Choose at least one platform.");
-      return;
-    }
-    setCaptionPending(true);
-    try {
-      const response = await fetch(`${apiUrl}/api/ai/captions`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topic: captionTopic,
-          audience: captionAudience,
-          instructions: captionInstructions,
-          language: captionLanguage,
-          platforms: captionPlatforms,
-        }),
-      });
-      if (!response.ok) throw new Error(await apiErrorMessage(response, "Caption generation failed"));
-      const result: unknown = await response.json();
-      if (typeof result !== "object" || result === null || !("posts" in result) || !Array.isArray(result.posts)) {
-        throw new Error("The AI service returned an unexpected response.");
-      }
-      const drafts = result.posts.filter((draft): draft is { platform: string; caption: string; hashtags: string[] } =>
-        typeof draft === "object" && draft !== null
-        && "platform" in draft && typeof draft.platform === "string"
-        && "caption" in draft && typeof draft.caption === "string"
-        && "hashtags" in draft && Array.isArray(draft.hashtags)
-        && draft.hashtags.every((tag: unknown) => typeof tag === "string"),
-      );
-      if (drafts.length !== result.posts.length || drafts.length !== captionPlatforms.length) {
-        throw new Error("The AI service did not return one valid caption for each platform.");
-      }
-      setCaptionDrafts(drafts);
-    } catch (error) {
-      setCaptionError(error instanceof Error ? error.message : "Caption generation failed. Please try again.");
-    } finally {
-      setCaptionPending(false);
-    }
-  }
   const weekdayOffset = (new Date(selectedMonth.getFullYear(), selectedMonth.getMonth(), 1).getDay() + 6) % 7;
   const changeMonth = (amount: number) => setSelectedMonth((current) => new Date(current.getFullYear(), current.getMonth() + amount, 1));
   const filteredPosts = posts.filter((post) => post.mediaName.toLowerCase().includes(query.toLowerCase()));
@@ -665,7 +608,7 @@ function SectionContent({ section, sectionName, currentUser, connectedAccounts, 
     {section === "calendar" && scheduleCalendar}
     {section === "content" && <section className="panel library-panel"><div className="library-toolbar"><div><span className="calendar-month-label">YOUR LITTLE CONTENT CORNER</span><h2>All your content</h2><p>Keep your campaign moments neat, tidy, and right where you need them.</p></div><span className="library-total">{media.length} {media.length === 1 ? "ITEM" : "ITEMS"}</span></div><p className="library-session-note">Files you upload are stored securely in your workspace. This list currently shows uploads from this browser session.</p><div className="library-search"><Icon name="search" size={17} /><input placeholder="Find a photo or video..." value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="library-grid">{filteredMedia.map((item) => <article className="library-card" key={item.id}><div className="library-image">{item.kind === "image" ? <Image src={item.url} alt={item.name} fill sizes="(max-width: 700px) 33vw, 180px" unoptimized /> : <video src={item.url} muted aria-label={item.name} />}<span className="library-format">{item.kind === "video" ? "VIDEO" : "PHOTO"}</span><button className="library-delete" aria-label={`Hide ${item.name} from this list`} title="Hide from this list" onClick={() => onRemoveMedia(item.id)}>⋯</button></div><div className="library-card-meta"><b>{item.name}</b><span>Uploaded this session</span></div></article>)}<label className="library-add-tile"><Icon name="plus" size={22} /><b>Add more content</b><span>Images and videos</span><input className="file-picker-input" aria-label="Add more content" type="file" accept="image/*,video/*" multiple onChange={onUploadChange} /></label></div></section>}
     {section === "accounts" && <AccountsSection user={currentUser} setNotice={setNotice} />}
-    {section === "ai-captions" && <section className="panel ai-demo-panel"><div className="ai-demo-spark">✦</div><span className="calendar-month-label">PLATFORM-SPECIFIC DRAFTS</span><h2>Generate captions and hashtags</h2><p>Each selected channel gets its own draft. Review every detail before using it.</p><form className="ai-generator-form" onSubmit={generateCaptions}><label><span>WHAT IS THE POST ABOUT?</span><textarea required maxLength={500} value={captionTopic} onChange={(event) => setCaptionTopic(event.target.value)} placeholder="Describe the announcement, product, event, or story." /></label><label><span>WHO IS IT FOR?</span><input required maxLength={300} value={captionAudience} onChange={(event) => setCaptionAudience(event.target.value)} placeholder="e.g. university students" /></label><label><span>LANGUAGE</span><select value={captionLanguage} onChange={(event) => setCaptionLanguage(event.target.value)}><option>English</option><option>Urdu</option><option>English and Urdu</option></select></label><label><span>FACTS AND BRAND NOTES</span><textarea maxLength={2000} value={captionInstructions} onChange={(event) => setCaptionInstructions(event.target.value)} placeholder="Verified details, tone, required wording, or anything the AI must not assume." /></label><fieldset><legend>PLATFORMS</legend><div className="ai-platform-choices">{accounts.map((account) => <label key={account.id}><input type="checkbox" checked={captionPlatforms.includes(account.id)} onChange={() => toggleCaptionPlatform(account.id)} /><span className="account-icon" style={{ "--account-color": account.color } as React.CSSProperties}>{account.icon}</span>{account.label}</label>)}</div></fieldset><button className="button button-primary" type="submit" disabled={captionPending}>{captionPending ? "Generating drafts…" : "Generate drafts"}</button></form>{captionError && <p className="ai-generator-error" role="alert">{captionError}</p>}{captionDrafts.length > 0 && <div className="ai-generated-list" aria-live="polite">{captionDrafts.map((draft) => { const account = accounts.find((item) => item.id === draft.platform); const hashtags = draft.hashtags.map((tag) => `#${tag.replace(/^#/, "")}`).join(" "); return <article className="ai-generated-draft" key={draft.platform}><div><span>{account?.label ?? draft.platform}</span><button type="button" onClick={() => navigator.clipboard.writeText(`${draft.caption}\n\n${hashtags}`).then(() => setNotice(`${account?.label ?? "Caption"} draft copied.`)).catch(() => setNotice("Clipboard access is unavailable in this browser."))}>Copy</button></div><p>{draft.caption}</p>{hashtags && <small>{hashtags}</small>}</article>; })}</div>}<span className="ai-note">Generated drafts are suggestions. Verify all facts and platform rules before publishing.</span></section>}
+    {section === "ai-captions" && <AIStudio setNotice={setNotice} />}
     {section === "analytics" && <AnalyticsView setNotice={setNotice} />}
     {section === "team" && <TeamSection user={currentUser} setNotice={setNotice} />}
     {section === "settings" && <section className="panel settings-panel"><span className="calendar-month-label">ACCOUNT SECURITY</span><h2>Change your password</h2><p>This updates your Content-Flow password only. It does not change your email account password.</p><form className="settings-form password-change-form" onSubmit={handlePasswordChange}><label><span>CURRENT CONTENT-FLOW PASSWORD</span><input type="password" autoComplete="current-password" required maxLength={128} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label><span>NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><small>Use at least 8 characters.</small></label><label><span>CONFIRM NEW PASSWORD</span><input type="password" autoComplete="new-password" required minLength={8} maxLength={128} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label><button className="button button-primary settings-save" type="submit" disabled={passwordChangePending}>{passwordChangePending ? "Updating..." : "Update password"}</button>{passwordChangeMessage && <p className={`password-change-message ${passwordChangeError ? "password-change-error" : "password-change-success"}`} role={passwordChangeError ? "alert" : "status"}>{passwordChangeMessage}</p>}</form></section>}

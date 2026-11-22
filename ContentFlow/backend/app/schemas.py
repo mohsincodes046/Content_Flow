@@ -43,6 +43,10 @@ class SubmissionCreate(BaseModel):
         return value
 
 
+AITone = Literal["friendly", "professional", "playful", "inspirational", "informative", "urgent"]
+AILength = Literal["short", "medium", "long"]
+
+
 class CaptionGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +55,10 @@ class CaptionGenerationRequest(BaseModel):
     instructions: str = Field(default="", max_length=2000)
     language: str = Field(default="English", min_length=1, max_length=60)
     platforms: list[Platform] = Field(min_length=1, max_length=5)
+    tone: AITone = "friendly"
+    length: AILength = "medium"
+    variations: int = Field(default=1, ge=1, le=3)
+    include_call_to_action: bool = True
 
     @field_validator("topic", "audience", "instructions", "language", mode="before")
     @classmethod
@@ -71,10 +79,72 @@ class CaptionDraft(BaseModel):
     platform: Platform
     caption: str = Field(min_length=1, max_length=5000)
     hashtags: list[str] = Field(max_length=15)
+    call_to_action: str = Field(default="", max_length=300)
+    variant: int = 1  # renumbered by the API; a model's own numbering is not trusted
 
 
 class CaptionDrafts(BaseModel):
-    posts: list[CaptionDraft] = Field(min_length=1, max_length=5)
+    posts: list[CaptionDraft] = Field(min_length=1, max_length=15)
+
+
+AIAssistTask = Literal["ideas", "rewrite", "repurpose", "hashtags", "call_to_action", "description"]
+
+
+class AIAssistRequest(BaseModel):
+    """One of the content tools. `text` is the topic (ideas) or the content to work on."""
+    model_config = ConfigDict(extra="forbid")
+
+    task: AIAssistTask
+    text: str = Field(min_length=1, max_length=5000)
+    audience: str = Field(default="", max_length=300)
+    platforms: list[Platform] = Field(min_length=1, max_length=5)
+    tone: AITone = "friendly"
+    length: AILength = "medium"
+    language: str = Field(default="English", min_length=1, max_length=60)
+    count: int = Field(default=3, ge=1, le=5)
+
+    @field_validator("text", "audience", "language", mode="before")
+    @classmethod
+    def strip_text(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Text fields must be strings.")
+        return value.strip()
+
+    @field_validator("platforms")
+    @classmethod
+    def unique_platforms(cls, value: list[Platform]) -> list[Platform]:
+        if len(value) != len(set(value)):
+            raise ValueError("Each platform can only be selected once.")
+        return value
+
+
+class AIAssistItem(BaseModel):
+    platform: Optional[Platform] = None
+    title: str = Field(default="", max_length=200)
+    text: str = Field(min_length=1, max_length=5000)
+    hashtags: list[str] = Field(default_factory=list, max_length=30)
+
+
+class AIAssistItems(BaseModel):
+    items: list[AIAssistItem] = Field(min_length=1, max_length=25)
+
+
+class AIAssistResponse(BaseModel):
+    provider: Literal["openai", "gemini", "claude"]
+    task: AIAssistTask
+    items: list[AIAssistItem]
+
+
+class AIImageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=3, max_length=2000)
+    aspect_ratio: Literal["1:1", "4:5", "9:16", "16:9"] = "1:1"
+
+
+class AIImageResponse(BaseModel):
+    media_type: str
+    data_base64: str
 
 
 class CaptionGenerationResponse(BaseModel):
@@ -496,3 +566,6 @@ class AIUsageResponse(BaseModel):
     used_last_24h: int
     daily_limit: int
     remaining: int
+    image_generation_enabled: bool = False
+    images_used_last_24h: int = 0
+    image_daily_limit: int = 0
